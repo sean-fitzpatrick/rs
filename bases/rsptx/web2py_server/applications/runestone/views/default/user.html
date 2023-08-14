@@ -30,8 +30,11 @@
             {{else: }}
                 <div class="col-md-12" data-ride="carousel" id="myCarousel"  style="margin-bottom: 50px;">
             {{ pass }}
-            <div class="col-md-8 col-md-offset-2" style="text-align: center;">
-                <img src="/static/images/logo_small.png" width="300" style="margin: auto; display:block; max-width: 100%" alt="Runestone Logo" >
+            <div class="col-md-4 col-md-offset-1" style="text-align: center;">
+                <img src="/static/images/fiatlux.jpg" width="150" style="margin: auto; display:block; max-width: 100%" alt="ULeth Logo" >
+            </div>
+            <div class="col-md-4 col-md-offset-1" style="text-align: center;">
+                <img src="/static/images/logo_small.png" width="150" style="margin: auto; display:block; max-width: 100%" alt="Runestone Logo" >
             </div>
             </div>
             {{ if 'static' in request.env.query_string:}}
@@ -321,6 +324,10 @@
                     </details>
                     <p>We have partnered with the <strong class="big"><a class="reference external" href="https://pretextbook.org">PreTeXt project</a></strong> to provide an outstanding authoring tool to create interactive textbooks.  And not only interactive textbooks in HTML but highly accessible textbooks in many formats including ePub, PDF, and braille.</p>
                     <p>Runestone Academy LTD operates as a non-profit.  We are awaiting official 501(c)(3) approval from the IRS.</p>
+                    <p>
+                        This instance of Runestone Academy is operated at the University of Lethbridge,
+                        and does not share data with the parent organization.
+                    </p>
                     <details>
                         <summary>How many ways is Runestone "free?"</summary>
                         <ul>
@@ -357,7 +364,7 @@
                     }
                     div.content {
                         margin-top: 10px;
-                        background-color: #9ac5da;
+                        background-color: #ffd400;
                         border-radius: 10px;
                     }
                     div.rsheading {
@@ -432,7 +439,14 @@
                 </div>
                 <div class="col-md-8 col-md-offset-2 col-sm-8 col-sm-offset-2  col-xs-10 col-xs-offset-1 mission">
                 <h2>Your Privacy</h2>
-                <p>The books provided on Runestone Academy are free and open source. They are for educational purposes. As part of our educational mission we do collect usage data to help us better understand how you learn and how you use our books. In exchange, we may use this data to make decisions about revisions to the content, and we may use this data to publish academic papers. We would never publish anything that revealed your identity. We may share this data with fellow educational researchers, but rest assured that all anything we share is fully de-identified. Please read our full <a href="/runestone/default/privacy">Privacy Policy</a>.  Also you may be interested in our <a href="/runestone/default/terms">Terms of Service</a>. <strong>High School Teachers</strong>  please read <a href="https://blog.runestone.academy/2021/05/28/data_privacy_agreements.html">This letter</a> before asking the Runestone Academy to sign a contract.                         </p>
+                <p>
+                   The instance of Runestone Academy at https://runestone.uleth.ca
+                   is operated by the Department of Mathematics and Computer Science
+                   at the University of Lethbridge.
+                   All student data remains on campus, and is only accessed by your instructor.
+                   Privacy details from the parent Runestone Academy project are provided below.
+                </p>
+                <p>The books provided on Runestone Academy are free and open source. They are for educational purposes. As part of our educational mission we do collect usage data to help us better understand how you learn and how you use our books. In exchange, we may use this data to make decisions about revisions to the content, and we may use this data to publish academic papers. We would never publish anything that revealed your identity. We may share this data with fellow educational researchers, but rest assured that all anything we share is fully de-identified. Please read our full <a href="/runestone/default/privacy">Privacy Policy</a>.  Also you may be interested in our <a href="/runestone/default/terms">Terms of Service</a>.                        </p>
                 </div>
                 <div class="col-md-8 col-md-offset-2 col-sm-8 col-sm-offset-2  col-xs-10 col-xs-offset-1 mission" style="margin-bottom: 20px;">
                     <h2>Get Involved</h2>
