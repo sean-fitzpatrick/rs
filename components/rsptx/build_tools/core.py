@@ -610,6 +610,14 @@ def manifest_data_to_db(course_name, manifest_path):
                     practice = "T"
                 if el and "practice" in el.attrib:
                     practice = "T"
+                autograde = ""
+                if "====" in dbtext:
+                    extraCode = dbtext.partition('====')[2] #text after ====
+                    #keywords for sql, py, cpp, java respectively
+                    for utKeyword in ['assert', 'unittest', 'TEST_CASE', 'junit']:
+                        if utKeyword in extraCode:
+                            autograde = "unittest"
+                            break
                 # chapter and subchapter are elements
                 sbc = subchapter.find("./id").text
                 cpt = chapter.find("./id").text
@@ -620,6 +628,7 @@ def manifest_data_to_db(course_name, manifest_path):
                     is_private="F",
                     question_type=qtype,
                     htmlsrc=dbtext,
+                    autograde=autograde,
                     from_source="T",
                     chapter=cpt,
                     subchapter=sbc,
@@ -686,15 +695,40 @@ def manifest_data_to_db(course_name, manifest_path):
 
     latex = root.find("./latex-macros")
     rslogger.info("Setting attributes for this base course")
+    ww_meta = root.find("./webwork-version")
+    if ww_meta is not None:
+        ww_major = ww_meta.attrib["major"]
+        ww_minor = ww_meta.attrib["minor"]
+    else:
+        ww_major = None
+        ww_minor = None
 
     res = sess.execute(
         f"select * from courses where course_name ='{course_name}'"
     ).first()
     cid = res["id"]
 
-    # Right now these are the only two attributes we store in the table, if this
-    # changes we will need to be more careful about what we delete
-    sess.execute(course_attributes.delete().where(course_attributes.c.course_id == cid))
+    # Only delete latex_macros and markup_system if they are present. Leave other attributes alone.
+    to_delete = ["latex_macros", "markup_system"]
+    if ww_major:
+        to_delete.append("webwork_js_version")
+        to_delete.append("ptx_js_version")
+    sess.execute(
+        course_attributes.delete().where(
+            and_(
+                course_attributes.c.course_id == cid,
+                course_attributes.c.attr.in_(to_delete),
+            )
+        )
+    )
+    if ww_major:
+        ins = course_attributes.insert().values(
+            course_id=cid, attr="webwork_js_version", value=f"{ww_major}.{ww_minor}"
+        )
+        ins = course_attributes.insert().values(
+            course_id=cid, attr="ptx_js_version", value="0.3"
+        )
+
     ins = course_attributes.insert().values(
         course_id=cid, attr="latex_macros", value=latex.text
     )

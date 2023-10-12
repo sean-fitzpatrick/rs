@@ -283,6 +283,7 @@ async def doAssignment(
             chapter_name=chap_name,
             subchapter_name=subchap_name,
             name=q.Question.name,
+            question_type=q.Question.question_type,
             activities_required=q.AssignmentQuestion.activities_required,
         )
         if q.AssignmentQuestion.reading_assignment:
@@ -407,7 +408,7 @@ async def doAssignment(
         ptx_js_version=course_attrs.get("ptx_js_version", "0.2"),
         webwork_js_version=course_attrs.get("webwork_js_version", "2.17"),
         request=request,
-        latex_preamble=course_attrs.get("latex_preamble", ""),
+        latex_preamble=course_attrs.get("latex_macros", ""),
         wp_imports=get_webpack_static_imports(course),
         settings=settings,
     )

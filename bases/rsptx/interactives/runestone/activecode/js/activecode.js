@@ -1385,10 +1385,12 @@ Yet another is that there is an internal error.  The internal error message is: 
             killableFor: true,
             nonreadopen: true,
             //        python3: this.python3,
-            imageProxy: "http://image.runestone.academy:8080/320x",
+            imageProxy: "/ns/rsproxy/imageproxy",
             inputfunTakesPrompt: true,
             jsonpSites: ["https://itunes.apple.com"],
         });
+        // Sk.JoBase = document.createElement("canvas");
+        // JoBase - currently broken - needs this canvas element
         Sk.divid = this.divid;
         Sk.logResults = logResults;
         if (this.graderactive && this.outerDiv.closest(".loading")) {

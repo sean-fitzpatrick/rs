@@ -715,7 +715,7 @@ def course_students():
 
     searchdict = OrderedDict()
     for row in cur_students:
-        if not row.id not in iset:
+        if row.id not in iset:
             name = row.first_name + " " + row.last_name
             username = row.username
             searchdict[str(username)] = name
@@ -740,7 +740,6 @@ def grading():
     for i in instructors:
         iset.add(i.instructor)
 
-    
     for row in assignments_query:
         assignmentids[row.name] = int(row.id)
         # Retrieve relevant info for each question, ordering them based on their
@@ -2188,8 +2187,8 @@ def save_assignment():
         due = datetime.datetime.utcnow() + datetime.timedelta(7)
     try:
         total = _set_assignment_max_points(assignment_id)
+        # do not update the course in case the user switched courses in another tab
         db(db.assignments.id == assignment_id).update(
-            course=auth.user.course_id,
             description=request.vars["description"],
             points=total,
             duedate=due,

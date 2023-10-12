@@ -293,16 +293,73 @@ If you do not want to install postgresql on your host, or maybe you are just loo
 1. Before you build the rest of the services run the command ``docker compose -f docker-compose.yml -f author.compose.yml -f db.compose.yml up -d db``  This will start just the database service in the set of composed services.   It will also use the default settings for ``POSTGRES_PASSWORD`` (runestone), ``POSTGRES_USER`` (runestone), and ``POSTGRES_DB`` (runestone_dev).  You should change these if you are running a production server, but if you are just getting set up for development for the first time just leave them alone.
 2. Run ``docker compose run rsmanage rsmanage initdb`` This will build the image in docker for the rsmanage command and then run it to create the database and initialize it with the tables and data that you need.  You can use ``docker compose run rsmanage rsmanage ...`` to run any of the rsmanage commands in the composed app.   If you prefer you can install ``rsmanage`` on the host and run it there, but you will need to be mindful of your environment variables related to the database.
 3. You will also need to have the minimal set of environment variables set up.  See the section below.  If you want to use the defaults you can set ``SERVER_CONFIG`` to ``development`` and ``DEV_DBURL`` to ``postgresql://runestone:runestone@localhost:2345/runestone_dev``  rsmanage will tell you if you are missing any environment variables.
-4. You can run ``poetry install --with=dev`` from the top level directory to get a working virtual environment with the ``rsmanage`` command installed.  Run ``poetry shell`` to enable the newly created virtual environment.  Then try to run ``rsmanage`` You may get some errors about missing database libraries, this is normal, but you will have to read the error messages and install the dependencies if you want to run ``rsmanaage`` directly.
+4. You can run ``poetry install --with=dev`` from the top level directory to get a working virtual environment with the ``rsmanage`` command installed.  Run ``poetry shell`` to enable the newly created virtual environment.  Then try to run ``rsmanage`` You may get some errors about missing database libraries, this is normal, but you will have to read the error messages and install the dependencies if you want to run ``rsmanage`` directly.
 
 At this point your database is ready
 
+Adding a Book
+-------------
+
+Now that you have done all the work to get your servers configured, you are also going to want one or more books for testing.  Lets add a book to your setup.
+
+1. Go to your ``$BOOK_PATH`` folder and clone a book.  Lets take our simple overview book as an example. run the command ``git clone https://github.com/RunestoneInteractive.git``  You should see a new folder called ``overview``
+2. The over view book is already in the database, so the only thing we need to do is build it.  ``cd overview`` and then run ``runestone build --all deploy``  If the command fails, make sure you have your virtual environment activated.  You can do this by running ``poetry shell`` from the top level directory.  
+
+This builds the book and deploys it to ``overview/published/overview``  This is the location that the Runestone server will look for it.  Important:  The book name and the folder name must match.  So if you want to build a book called ``mybook`` then you need to clone it into a folder called ``mybook`` and then build it into ``mybook/published/mybook``.
+
+The overview book is an easy example because the database already contains a course called overview by default.  Lets look at a more complicated scenario.  Lets say you want to build the active calculus book, and that you are going to want to use your server to support your department's calculus courses.
+
+1. Clone the book into your ``$BOOK_PATH`` folder.  ``git clone https://github.com/active-calculus/active-calculus-single-mbx.git ac-single``
+2. We need to add ac-single to the database of known courses with the rsmanage command.
+
+.. code-block:: bash
+
+   $ rsmanage addcourse
+   Loaded .env file from /Users/bmiller/rs
+   You have defined docker compose specific environment variables
+   Using configuration: development
+   Using database: runestone_dev
+   Course Name: ac-single
+   Base Course: ac-single
+   Your institution: Runestone Academy
+   Require users to log in [Y/n]: n
+   Enable pair programming support [y/N]: n
+   Course added to DB successfully
+   $ 
+
+3. Now we can build the book using the rsmanage command.  ``rsmanage build --ptx ac-single`` This will build the book and deploy it to ``ac-single/published/ac-single``  The Active Calculus book should now be visible in the library.
+4. Notice that we used ``ac-single`` for the course name as well as the base course name.  You **should not** use this course for your own courses.  Instead you should use the runestone web interface to create a custom course from the ``ac-single`` base course.  But first you will need to make the book available to the web interface.  You do this but setting a flag in the library table of the database.  For now you need to do this by hand.  This really should be another rsmanage subcommand but instead run ``psql $DEV_DBURL``
+
+.. code-block:: bash
+   
+      $ rsmanage library forclass --show
+
+You can show the main library settings for any book with ``rsmanage library show document-id``  You can also hide/show books in the library with ``library visible --show/hide`` 
+
+.. code-block:: bash
+
+   rsmanage library show ac-single                                                                                       ─╯
+   INFO - 2023-09-13 14:10:52,417 - Settings - Error path is /Users/bmiller/Runestone/books/tickets
+   Loaded .env file
+   You have defined docker compose specific environment variables
+   Using configuration: development
+   Using database: runestone_dev
+   Title: Active Calculus
+   Authors: Matt Boelkins
+   shelf sections: Mathematics
+   description: Active Calculus Single Variable supports an active learning approach in the first two semesters of calculus. Every section of Active Calculus Single Variable offers engaging activities for students to complete before and during class; additional exercises that challenge students to connect and assimilate core concepts; interactive WeBWorK exercises; opportunities for students to develop conceptual understanding and improve their skills at communicating mathematical idea.  The text is free and open-source, available in HTML, PDF, and print formats.  Ancillary materials for instructors are also available.
+   -----------------
+   for_classes: True
+   is_visible: True
+
+Now if you go to the create a course page Active Calculus will be a choice for you to use.
 
 
 Getting a Server Started 
 ------------------------
 
 This assumes that you have already followed the instructions for installing postgresql, poetry and the plugins as well as Docker.
+
 1. copy ``sample.env`` to ``.env`` and edit the file.
 2. Run ``poetry install --with=dev`` from the top level directory.  This will install all of the dependencies for the project.  When that completes run ``poetry shell`` to start a poetry shell.  You can verify that this worked correctly by running ``rsmanage env``.  You should see a list of environment variables that are set.  If you do not see them then you may need to run ``poetry shell`` again.  If you get an error message that you cannot interpret you can ask for help in the ``#developer`` channel on the Runestone discord server.
 3.  Create a new database for your class or book.  You can do this by running ``createdb -O runestone <dbname>``.  You can also do this in the psql command line interface by running ``create database <dbname> owner runestone;``  You may have to become the postgres user in order to run that command.  If you have already created a database you can skip this one.
@@ -335,7 +392,7 @@ To run a project, for example the author server main web app:
    poetry shell
    uvicorn rsptx.author_server_api.main:app --reload
 
-The top level docker-compose.yml file combines all of the projects
+Better yet, I have added a simple script called ``dstart`` just give it the name of the service you want to run and it will start it up for you.  It is also a simple place to look if you want to see the command to start up a particular server.
 
 Each project has a Dockerfile for building an image. These images should
 be push-able to our docker container registry and or the public docker
@@ -816,3 +873,61 @@ Other References
 * Docker Compose `documentation <https://docs.docker.com/compose/compose-file/compose-file-v3/>`_
 * Nginx `documentation <https://nginx.org/en/docs/>`_
   
+
+When Things are not Working - Debugging Tips
+--------------------------------------------
+
+The Runestone Server is a complex system, but it runs in production and serves millions of requests every day.  But, there are plenty of things that can go wrong, especially when you are first starting out.  This section will cover some common problems that you might run into and suggest some ways to figure out how to get past that problem.  First a couple of general notes and then I'll try to address some frequently asked questions.
+
+The rs repository is under continuous development so make sure that you keep it up to date by doing `git pull` frequently.  Like any system developed by humans sometimes bugs do creep into the main branch but we do our best to make sure that whatever gets pushed to main will start up and run.  If it doesn't those issues are normally fixed and corrected quickly, so it pays to keep current.
+
+Make sure that you are running the **rs** virtual environment.  Normally your shell will show you your current virtual environment by decorating the command prompt.  Also, make sure that you keep your virtual environment up to date.  If the pyproject.toml file changes or the poetry.lock file changes then you should update your virtual environment by running `poetry install --with=dev` from the root folder of the **rs** repository.
+
+Make sure that you run `./build.py` or `./build.py --all` command from the root folder, and pay attention to the status messages both for building the Wheels and for building the services.  If a service fails to build you should look at the log in the project folder for that service.
+
+Many problems can be traced back to bad or missing environment variables.  Make sure to review that section and check your `.env` file for errors or typos.
+
+Use ``docker compose ps`` to check the status of the running services.
+
+You are trying to run the ``runestone build`` command but it fails with a stack trace, or you get command not found, or...   If you get a "command not found" error the most likely cause of that is that you have not activated the virtual environment.  Make sure that you have activated the **rs** virtual environment with the command ``poetry shell``  when you are in the ``/path/to/rs`` folder.
+
+If you get an error when you are running runestone the first thing to do is to make sure you are running the version of the command you think you are running.  Run the command ``which runestone``, it should tell show you something like ``/path/to/rs/.venv/bin/runestone``  If the error indicates that a package or module is missing, make sure you update the virtual environment as described above.
+
+The server does not start up.  When I run ``docker compose up`` I see messages like ``COPY ./dist/rsmanage-2.0.0-py3-none-any.whl ...``  This indicates that the build did not complete.  `COPY` is a command that runs as part of building a docker image.  ``docker compose up`` will try to build an image if one does not exist.  In this case you should go back to running the ``./build.py`` script again, and checking the logs of whatever service failed to build.  
+
+Docker builds can fail for many reasons unrelated to runestone.  Docker uses a lot of disk space, and occassionally a build will fail because docker has used up all the space it is allocated.  It pays to run the command ``docker system prune`` once a week or so to clear out docker's cache and clean up outdated images.
+
+If you see a message containing the words ``failed to solve`` this means that docker could not resolve some dependencies.  This is mostly likely because some image upstream from runestone has changed.  In most cases just re-running the build will result in success as it can take a bit of time for the dependencies to propagate to all of the servers that support docker builds.
+
+When I run ``docker compose up -d`` and then try to access a page, I get a ``502 Gateway error`` in my browser.  This indicates that there is a problem with one of the services.  Now is the time to use the ``docker compose logs`` command.  But it pays to be specific and target the log of the service you were trying to access.  Knowing which service you were using is as easy as looking at the URL in your browser address bar.  Most of the time the first part of the URL is the name of the service.
+
+* ``author`` - is the author service
+* ``assignment`` is the assignment server
+* ``/ns`` - is the book server.  We kept the name `ns` for backward compatibility
+* ``runestone`` - is the web2py server that handles the instructor interface, logging in, the peer instruction interface and the practice tool.  Each of these will migrate to new servers over time.  Again ``runestone`` was kept for backward compatibility.
+
+Use the command ``docker compose logs --tail 100 <service>`` to look at the last 200 lines of the log for the name of the service.  If you want to actively follow the log live, you can run ``docker compose logs --tail 100 --follow <service>`` if you want to see all of the log messages for all of the servers you can omit the service name.  The logs are your friend.  They will contain error messages and lots of debugging output that you can match against the code to help you figure out what is wrong.  "Use the source luke"
+
+I'm not getting a ``502 gateway error``, but something about a web page is not working right.
+
+1. Check the logs, see above.
+2. Check the Javascript Console / Developer tools in your browser.  If you don't know how to get to the Javascript console for your browser just google it or check your browser documentation.  Again, use the source, the messages in the javascript console will often pinpoint the location of the problem.
+
+I'm having problems installing/configuring postgresql.  There is **extensive** documentation and help available to install postgresql on almost every operating system.  I'm not going to try to duplicate any of that in this document.  A simple google search will almost certainly lead you to high quality documenation and tutorial help in setting up postgresql.
+
+Reporting Problems
+~~~~~~~~~~~~~~~~~~
+
+Before you come to Discord, or file an issue on Github please (re)read this section and try to solve the problem yourself.  If you are stumped then asking a question on discord is your best option.  But please follow these suggestions.
+
+1. Be specific.  Just saying something failed is almost entirely useless. Use the logs as described above to get detailed information.
+2. If you have an error message or a stack trace.  Please **copy and paste** the entire message into your post.  You can use the "picket fence markup" -- three back quotes on a line to start and then three backquotes after the message.  Please **do not** make a screen shot of a few lines from the message.  They are hard to read, and likely omit important information.
+3. I repeat, use the logs to seek out specific information.
+4. When describing the problem it is very important to describe exactly how you can reproduce the problem.  If you can't reproduce it then We will certainly not be able to reproduce the problem.  If we can't reproduce it then it is almost impossible for us to fix.  
+5. Make sure you use ``docker compose ps`` to verify that all of the services you think are running are actually running.
+6. Make sure you describe your configuration when reporting a problem.  What services are you starting?  How is your database configured?  Is postgresql installed on the host, in docker? as part of the composed application?
+
+Taking the time to carefully document how we can recreate a problem **is a valuable contribution to the project** When developers have to try to figure out how to reproduce something that is time that they could spend fixing a problem that someone else has described how to reproduce.
+
+If you have investigated carefully and are convinced that the problem you are encountering is a bug, then please create an issue on Github.
+
