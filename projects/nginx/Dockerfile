@@ -12,12 +12,3 @@ COPY components/rsptx/templates/staticAssets /usr/share/nginx/html/staticAssets
 # with other tenants on the same machine. 
 
 # See - https://medium.com/rahasak/setup-lets-encrypt-certificate-with-nginx-certbot-and-docker-b13010a12994 to set up certbot
-ADD runestone.uleth.ca /etc/nginx/sites-available/runestone.uleth.ca
-
-RUN ln -s /etc/nginx/sites-available/vrunestone.uleth.ca /etc/nginx/sites-enabled/runestone
-
-ADD docker-entrypoint.sh .
-
-VOLUME ["/etc/letsencrypt"]
-
-CMD ["/etc/nginx/docker-entrypoint.sh"]
