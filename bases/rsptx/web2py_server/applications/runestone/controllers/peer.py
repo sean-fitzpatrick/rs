@@ -124,7 +124,6 @@ def extra():
 
 
 def _get_current_question(assignment_id, get_next):
-
     assignment = db(db.assignments.id == assignment_id).select().first()
 
     if get_next == "Reset":
@@ -144,7 +143,7 @@ def _get_numbered_question(assignment_id, qnum):
         orderby=[db.assignment_questions.sorting_priority, db.assignment_questions.id]
     )
     done = "false"
-    if qnum >= len(a_qs) - 1:
+    if qnum > len(a_qs) - 1:
         qnum = len(a_qs) - 1
         done = "true"
 
@@ -312,7 +311,6 @@ def percent_correct():
 #
 @auth.requires_login()
 def student():
-
     if "access_token" not in request.cookies:
         # this means the user is logged in to web2py but not fastapi - this is not good
         # as the javascript in the questions assumes the new server and a token.
@@ -372,9 +370,7 @@ def find_good_partner(group, peeps, answer_dict):
         logger.debug(f"{i} : {peeps[i]}")
         i += 1
 
-    logger.debug("made it")
     if i < len(peeps):
-        logger.debug("made it 2")
         return peeps.pop(i)
     else:
         return peeps.pop()
@@ -474,10 +470,12 @@ def publish_message():
     response.headers["content-type"] = "application/json"
     r = redis.from_url(os.environ.get("REDIS_URI", "redis://redis:6379/0"))
     data = json.dumps(request.vars)
-    logger.debug(f"data = {data}")
+    logger.debug(f"PM data = {data} {os.environ.get('REDIS_URI', 'redis://redis:6379/0')}")
     r.publish("peermessages", data)
-    mess_count = int(r.hget(f"{auth.user.course_name}_state", "mess_count"))
-    if not mess_count:
+    res = r.hget(f"{auth.user.course_name}_state", "mess_count")
+    if res is not None:
+        mess_count = int(res)
+    else:
         mess_count = 0
     if request.vars.type == "text":
         r.hset(f"{auth.user.course_name}_state", "mess_count", str(mess_count + 1))
@@ -532,7 +530,7 @@ def peer_async():
         assignment_id=assignment_id,
         nextQnum=qnum + 1,
         all_done=all_done,
-        **course_attrs
+        **course_attrs,
     )
 
 

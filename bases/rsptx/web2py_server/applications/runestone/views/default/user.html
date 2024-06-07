@@ -115,11 +115,11 @@
                     <p><strong>Important:</strong>  Some school email systems block all external emails, filter "password reset" type emails, or use other filters that may prevent you from getting this email! <strong>Your instructor can reset your password.</strong></p>
                     {{=form}}
                     {{ if settings.academy_mode and request.args(0) == 'profile':}}
-                    <form action="{{=URL('default','delete')}}" onsubmit="return confirm('Are you sure?')">
+                    <form action="{{=URL('default','delete')}}" onsubmit="return confirm('Are you sure? You will lose ALL your data forever.')">
 		                <div class="checkbox">
                         <label>
                           <input type=checkbox name="deleteaccount" id="delacct">
-			              <span><strong>Delete my account</strong> and all data. Cannot be undone!</span>
+			              <span><strong>Delete my account</strong> and ALL data from ALL courses. This cannot be undone!</span>
                         </label>
                         </div>
                         <input type="submit" value="Delete" class="btn btn-primary">
@@ -317,6 +317,9 @@
                             <tr class="row">
                                 <td class="col-md-4 col-sm-4 col-xs-4"><img src="/runestone/static/_images/UT_Square_logo.png" width="64" alt="UTexas Logo" style="background-color: white; padding: 3px;">University of Texas at Austin</td>
                                 <td class="col-md-4 col-sm-4 col-xs-4"><a href="https://www.luther.edu"><img src="/runestone/static/_images/luther_college_vertical_blue.png" width=64 alt="Luther Logo (Go Norse!)" style="background-color: white; padding: 3px;"></a> Student Faculty Research</td>
+                            </tr>
+                            <tr class="row">
+                            <td class=""col-md-4 col-sm-4 col-xs-4"><a href="https://pythontutor.com"><img src="https://s3.dualstack.us-east-2.amazonaws.com/pythondotorg-assets/media/community/logos/python-logo-only.png" width=64>  Python Tutor</a></td>
                             </tr>
                         </table>
 

@@ -14,6 +14,7 @@ from shutil import copyfile
 import yaml
 import toml
 import pdb
+from collections import OrderedDict
 
 # use python-dotenv >= 0.21.0
 from dotenv import load_dotenv
@@ -47,6 +48,8 @@ if "--help" in sys.argv:
         --push push all containers to a container registry
         --one <service> build just one container, e.g. --one author
         --restart restart the container(s) after building
+        --clean remove all containers and images before starting
+        --verbose show more output
 
         If something in the build does not work or you have questions about setup or environment
         variables or installation, please check out our developer documentation.
@@ -54,6 +57,15 @@ if "--help" in sys.argv:
         """
     )
     exit(0)
+
+if "--clean" in sys.argv:
+    console.print("Removing all containers and images...", style="bold")
+    ret = subprocess.run(["docker", "system", "prune", "--force"], capture_output=True)
+    if ret.returncode == 0:
+        console.print("All containers and images removed successfully", style="green")
+    else:
+        console.print("Failed to remove all containers and images", style="bold red")
+        exit(1)
 
 # read the version from pyproject.toml
 with open("pyproject.toml") as f:
@@ -107,6 +119,7 @@ for var in [
     "WEB2PY_CONFIG",
     "JWT_SECRET",
     "WEB2PY_PRIVATE_KEY",
+    "COMPOSE_PROFILES",
 ]:
     if var not in os.environ:
         table.add_row(var, "[red]No[/red]")
@@ -138,6 +151,17 @@ if "DC_DEV_DBURL" not in os.environ:
 else:
     console.print("DC_DEV_DBURL set.  Using it instead of DEV_DBURL")
 
+if "COMPOSE_PROFILES" not in os.environ:
+    console.print(
+        "COMPOSE_PROFILES not set.  Options include: basic, author, dev, production",
+        style="bold red",
+    )
+    console.print(
+        "the following services will not be started unless you use the --profile switch: db, author, worker pgbouncer, nginx_dstart_dev",
+        style="bold red",
+    )
+    finish = False
+
 if not os.path.isfile("bases/rsptx/web2py_server/applications/runestone/models/1.py"):
     console.print("Copying 1.py.prototype to 1.py")
     copyfile(
@@ -153,16 +177,16 @@ if finish:
     exit(1)
 
 ym = yaml.load(open("docker-compose.yml"), yaml.FullLoader)
-if "--all" in sys.argv or "--one" in sys.argv:
-    am = yaml.load(open("author.compose.yml"), yaml.FullLoader)
-    # .update replaces the key from the first dict with the key from the second dict
-    # since nginx is in both files we will lose most of the nginx stuff from the docker-compose.yml
-    # file unless we update the other way around.
-    am["services"].update(ym["services"])
-    ym = am
+
 
 # remove the redis service from the list since we don't customize it
 del ym["services"]["redis"]
+
+if "--all" not in sys.argv:
+    # remove the author and worker services from the list since we don't customize them
+    del ym["services"]["author"]
+    del ym["services"]["worker"]
+
 
 if "--one" in sys.argv:
     svc_to_build = sys.argv[sys.argv.index("--one") + 1]
@@ -170,6 +194,12 @@ if "--one" in sys.argv:
     for svc in list(ym["services"].keys()):
         if svc != svc_to_build:
             del ym["services"][svc]
+
+# if --all then add the interactive service at the beginning of ym["services"]
+if "--all" in sys.argv:
+    ym["services"]["interactives"] = {"build": {"context": "./projects/interactives"}}
+    ym["services"] = OrderedDict(ym["services"])  # convert to ordered dict
+    ym["services"].move_to_end("interactives", last=False)
 
 # Attempt to determine the encoding of data returned from stdout/stderr of
 # subprocesses. This is non-trivial. See the discussion at [Python's
@@ -194,7 +224,6 @@ except AttributeError:
 
 
 def progress_wheel():
-
     chars = "x+"
     progress_wheel.counter += 1
     return chars[progress_wheel.counter % 2]
@@ -257,9 +286,25 @@ with Live(generate_wheel_table(status), refresh_per_second=4) as lt:
         projdir = ym["services"][proj]["build"]["context"]
         if os.path.isdir(projdir):
             with pushd(projdir):
-                status[proj] = "[grey62]building...[/grey62]"
-                lt.update(generate_wheel_table(status))
+                if os.path.isfile("build.py"):
+                    status[proj] = "[grey62]pre build...[/grey62]"
+                    lt.update(generate_wheel_table(status))
+                    res = subprocess.run(["python", "build.py"], capture_output=True)
+                    if res.returncode == 0:
+                        status[proj] = "[green]Yes[/green]"
+                        lt.update(generate_wheel_table(status))
+                    else:
+                        status[proj] = "[red]Fail[/red]"
+                        lt.update(generate_wheel_table(status))
+                        if VERBOSE:
+                            console.print(res.stderr.decode(stdout_err_encoding))
+                        else:
+                            with open("build.log", "a") as f:
+                                f.write(res.stderr.decode(stdout_err_encoding))
+                        continue
                 if os.path.isfile("pyproject.toml"):
+                    status[proj] = "[grey62]building...[/grey62]"
+                    lt.update(generate_wheel_table(status))
                     res = subprocess.run(
                         ["poetry", "build-project"], capture_output=True
                     )
@@ -299,6 +344,10 @@ status = {}
 with Live(generate_table(status), refresh_per_second=4) as lt:
     status = {}
     for service in ym["services"]:
+        if service == "interactives":
+            status[service] = "[grey62]skipped...[/grey62]"
+            lt.update(generate_table(status))
+            continue
         status[service] = "[grey62]building...[/grey62]"
         lt.update(generate_table(status))
         # to use a different wheel without editing Dockerfile use --build-arg wheel="wheelname"
@@ -307,8 +356,6 @@ with Live(generate_table(status), refresh_per_second=4) as lt:
             "compose",
             "-f",
             "docker-compose.yml",
-            "-f",
-            "author.compose.yml",
             "--progress",
             "plain",
             "build",
@@ -344,6 +391,8 @@ if "--push" in sys.argv:
     for service in ym["services"]:
         if "image" in ym["services"][service]:
             image = ym["services"][service]["image"]
+            if "ghcr.io" not in image:
+                continue
             console.print(f"Pushing {image}")
             ret1 = subprocess.run(
                 ["docker", "tag", image, f"{image}:v{version}"], check=True
@@ -374,9 +423,10 @@ if "--restart" in sys.argv:
         command_list = [
             "docker",
             "compose",
+            "--profile",
+            "author",
             "-f",
             "docker-compose.yml",
-            "-f" "author.compose.yml",
             "stop",
         ]
         console.print("Restarting all services...", style="bold")
@@ -386,7 +436,6 @@ if "--restart" in sys.argv:
             "compose",
             "-f",
             "docker-compose.yml",
-            "-f" "author.compose.yml",
             "stop",
             svc_to_build,
         ]
@@ -402,9 +451,10 @@ if "--restart" in sys.argv:
         command_list = [
             "docker",
             "compose",
+            "--profile",
+            "author",
             "-f",
             "docker-compose.yml",
-            "-f" "author.compose.yml",
             "up",
             "-d",
         ]
@@ -412,9 +462,16 @@ if "--restart" in sys.argv:
         command_list = [
             "docker",
             "compose",
+            "--profile",
+            "author",
+            "--profile",
+            "basic",
+            "--profile",
+            "dev",
+            "--profile",
+            "production",
             "-f",
             "docker-compose.yml",
-            "-f" "author.compose.yml",
             "up",
             "-d",
             svc_to_build,

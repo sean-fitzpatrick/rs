@@ -202,8 +202,13 @@ async def doAssignment(
 
         return RedirectResponse("/assignment/student/chooseAssignment")
 
-    if assignment.visible == "F" or assignment.visible is None:
+    if (
+        assignment.visible == "F"
+        or assignment.visible is None
+        or assignment.visible == False
+    ):
         if await is_instructor(request) is False:
+            rslogger.error(f"Attempt to access invisible assignment {assignment_id} by {user.username}")
             return RedirectResponse("/assignment/student/chooseAssignment")
 
     if assignment.points is None:
@@ -251,6 +256,23 @@ async def doAssignment(
             # htmlsrc = htmlsrc.replace(
             #     "generated/webwork", get_course_url(course, "generated/webwork")
             # )
+            # rewrite xref links and knowls in fillintheblank questions
+            if "fillintheblank" in htmlsrc:
+                htmlsrc = htmlsrc.replace(
+                    'href="', f'href="/ns/books/published/{course.base_course}/'
+                )
+
+            # Unescape contents of script tags in fitb questions.
+            if "application/json" in htmlsrc:
+                htmlsrc = htmlsrc.replace("&lt;", "<")
+                htmlsrc = htmlsrc.replace("&gt;", ">")
+                htmlsrc = htmlsrc.replace("&amp;", "&")
+
+            if 'data-knowl="./' in htmlsrc:
+                htmlsrc = htmlsrc.replace(
+                    'data-knowl="./',
+                    f'data-knowl="/ns/books/published/{course.base_course}/',
+                )
         else:
             htmlsrc = None
 
