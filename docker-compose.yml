@@ -264,10 +264,6 @@ services:
       author:
         condition: service_started
         required: false
-    links:
-      - runestone
-      - book
-      - assignment
     command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
 
   # this second nginx is designed to sit in front of python servers running on a host machine for a more convineient dev environment
