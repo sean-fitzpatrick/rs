@@ -2,8 +2,12 @@
 
 import subprocess
 import sys
+import os
 from rsptx.cl_utils.core import pushd
 import toml
+import json
+from json2xml import json2xml
+
 
 project = toml.load("pyproject.toml")
 
@@ -14,14 +18,37 @@ else:
 
 
 with pushd("../../bases/rsptx/interactives"):
+    subprocess.run(["npm", "install"], check=True)
     if "--dev" in sys.argv:
-        subprocess.run(["npm", "run", "build"], check=True)
+        if "--to" in sys.argv:
+            book = sys.argv[sys.argv.index("--to") + 1]
+            static_path = f"{os.environ['BOOK_PATH']}/{book}/published/{book}/_static"
+            print("Building to:", static_path)
+            subprocess.run(
+                ["npm", "run", "build", "--", "--env", f"builddir={static_path}"],
+                check=True,
+            )
+            data = json.loads(
+                open(os.path.join(static_path, "webpack_static_imports.json")).read()
+            )
+            with open(
+                os.path.join(static_path, "webpack_static_imports.xml"), "w"
+            ) as f:
+                f.write(json2xml.Json2xml(data).to_xml())
+        else:
+            subprocess.run(["npm", "run", "build"], check=True)
+            subprocess.run(
+                ["python", "./scripts/dist2xml.py", f"{VERSION}"], check=True
+            )
     else:
         subprocess.run(["npm", "run", "dist"], check=True)
-    subprocess.run(["python", "./scripts/dist2xml.py", f"{VERSION}"], check=True)
+        subprocess.run(["python", "./scripts/dist2xml.py", f"{VERSION}"], check=True)
 
+if "--dev" in sys.argv:
+    sys.exit(0)
 
-subprocess.run(["poetry", "build-project"], check=True)
+if "--fromroot" not in sys.argv:
+    subprocess.run(["poetry", "build-project"], check=True)
 
 
 if sys.argv[1:] == ["--publish"]:

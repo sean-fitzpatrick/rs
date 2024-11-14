@@ -64,15 +64,19 @@ function connect(event) {
                                     messarea.innerHTML = `<h3>Please Give an explanation for your answer</h3><p>Then discuss your answer with your group members</p>`;
                                 } else {
                                     messarea.innerHTML = `<h3>Voting for this question is complete</h3>`;
+                                    let feedbackDiv = document.getElementById(`${currentQuestion}_feedback`);
+                                    feedbackDiv.style.display = "none";
                                 }
                             }
+
                             if (!eBookConfig.isInstructor) {
-                                window.componentMap[
-                                    currentQuestion
-                                ].submitButton.disabled = true;
-                                window.componentMap[
-                                    currentQuestion
-                                ].disableInteraction();
+                                let qq = window.componentMap[currentQuestion];
+                                if (getVoteNum() > 1) {
+                                    qq.checkCurrentAnswer();
+                                    qq.logCurrentAnswer();
+                                }
+                                qq.submitButton.disabled = true;
+                                qq.disableInteraction();
                             }
                             clearInterval(itimerid);
                             // Get the current answer and insert it into the
@@ -89,7 +93,7 @@ function connect(event) {
                                     div_id: currentQuestion,
                                     event: "peer",
                                     act: "stop_question",
-                                    course: eBookConfig.course,
+                                    course_name: eBookConfig.course,
                                 });
                             }
                         }
@@ -120,10 +124,14 @@ function connect(event) {
                     }
                     messarea = document.getElementById("imessage");
                     messarea.innerHTML = `<h3>Time to make your 2nd vote</h3>`;
+                    let feedbackDiv = document.getElementById(`${currentQuestion}_feedback`);
+                    feedbackDiv.innerHTML = "";
+                    feedbackDiv.className = "";
                     $(".runestone [type=radio]").prop("checked", false);
                     $(".runestone [type=checkbox]").prop("checked", false);
                     break;
                 case "enableNext":
+                    console.log("Got enableNext message");
                     // This moves the student to the next question in the assignment
                     // first disable the handler to prevent leaving the page.
                     $(window).off("beforeunload");
@@ -154,6 +162,12 @@ function connect(event) {
                         });
                     }
                     break;
+                case "enableFaceChat":
+                    console.log("got enableFaceChat message");
+                    let facechat = document.getElementById("group_select_panel");
+                    if (facechat) {
+                        facechat.style.display = "block";
+                    }
                 default:
                     console.log("unknown control message");
             }
@@ -161,7 +175,7 @@ function connect(event) {
     };
 
     window.onbeforeunload = function () {
-        ws.onclose = function () {}; // disable onclose handler first
+        ws.onclose = function () { }; // disable onclose handler first
         ws.close();
     };
 }
@@ -200,7 +214,7 @@ async function logPeerEvent(eventInfo) {
         "Content-type": "application/json; charset=utf-8",
         Accept: "application/json",
     });
-    let request = new Request(eBookConfig.ajaxURL + "hsblog", {
+    let request = new Request(`${eBookConfig.new_server_prefix}/logger/bookevent`, {
         method: "POST",
         headers: headers,
         body: JSON.stringify(eventInfo),
@@ -216,6 +230,39 @@ async function logPeerEvent(eventInfo) {
         console.log(`Error: ${e}`);
     }
 }
+
+async function sendLtiScores(event) {
+    // parse the assignment_id from the location.search
+    let urlParams = new URLSearchParams(window.location.search);
+    let assignmentId = urlParams.get('assignment_id');
+
+    let data = {
+        div_id: currentQuestion,
+        course_name: eBookConfig.course,
+        assignment_id: assignmentId,
+    };
+    let jsheaders = new Headers({
+        "Content-type": "application/json; charset=utf-8",
+        Accept: "application/json",
+    });
+    let request = new Request("/runestone/peer/send_lti_scores", {
+        method: "POST",
+        headers: jsheaders,
+        body: JSON.stringify(data),
+    });
+    let resp = await fetch(request);
+    let spec = await resp.json();
+    if (spec !== "success") {
+        alert(`Scores not sent! ${spec}`);
+    } else {
+        // success
+        let butt = document.querySelector("#sendScores");
+        butt.classList.replace("btn-info", "btn-secondary");
+        butt.disabled = true;
+    }
+}
+
+
 // Send a message to the websocket server
 // the server can then broadcast the message or send it to a
 // specific user
@@ -255,14 +302,25 @@ function warnAndStopVote(event) {
     if (event.srcElement.id == "vote1") {
         let butt = document.querySelector("#vote1");
         butt.classList.replace("btn-info", "btn-secondary");
+        document.querySelector("#makep").disabled = false;
+        document.querySelector("#facechat").disabled = false;
     } else {
         let butt = document.querySelector("#vote3");
         butt.classList.replace("btn-info", "btn-secondary");
+        let sendScore = document.querySelector("#sendScores");
+        if (sendScore) {
+            sendScore.disabled = false;
+        }
     }
     event.srcElement.disabled = true;
 }
 
 async function makePartners() {
+    // first make sure there are enough votes to make pairs
+    if (answerCount < 2) {
+        alert("Not enough votes to make groups");
+        return;
+    }
     let butt = document.querySelector("#makep");
     butt.classList.replace("btn-info", "btn-secondary");
     let gs = document.getElementById("groupsize").value;
@@ -289,13 +347,36 @@ async function makePartners() {
         alert(`Pairs not made! ${spec}`);
     } else {
         // success
-        document.querySelector("#makep").disabled = true;
+        butt.disabled = true;
+        document.querySelector("#vote2").disabled = false;
     }
+}
+
+async function enableFaceChat(event) {
+    let mess = {
+        type: "control",
+        sender: `${user}`,
+        message: "enableFaceChat",
+        broadcast: true,
+        course_name: eBookConfig.course,
+    };
+    publishMessage(mess);
+
+    let faceChatButton = document.querySelector("#facechat");
+    faceChatButton.classList.replace("btn-info", "btn-secondary");
+    faceChatButton.disabled = true;
+
+    let textChatButton = document.querySelector("#makep");
+    textChatButton.classList.replace("btn-info", "btn-secondary");
+    textChatButton.disabled = true;
+
+    document.querySelector("#vote2").disabled = false;
 }
 
 function startVote2(event) {
     let butt = document.querySelector("#vote2");
     butt.classList.replace("btn-info", "btn-secondary");
+    event.srcElement.disabled = true;
     voteNum += 1;
     startTime2 = new Date().toUTCString();
     let mess = {
@@ -307,7 +388,20 @@ function startVote2(event) {
     };
     //ws.send(JSON.stringify(mess));
     publishMessage(mess);
-    event.srcElement.disabled = true;
+
+    // Disabling the "Enable Text Chat" button (if not already done) once Vote 2 begins
+    let textChatButton = document.querySelector("#makep");
+    textChatButton.classList.replace("btn-info", "btn-secondary");
+    textChatButton.disabled = true;
+    // Disabling the "Enable in-person Chat" button (if not already done) once Vote 2 begins
+    let faceChatButton = document.querySelector("#facechat");
+    faceChatButton.classList.replace("btn-info", "btn-secondary");
+    faceChatButton.disabled = true;
+
+    // Enabling the "Stop Vote 2" button once Vote 2 begins
+    document.querySelector("#vote3").disabled = false;
+    let counterel = document.querySelector("#counter2");
+    counterel.innerHTML = "<p>Vote 2 Answers: 0</p>";
 }
 
 async function clearPartners(event) {
@@ -344,7 +438,7 @@ function enableNext() {
             div_id: currentQuestion,
             event: "peer",
             act: "stop_question",
-            course: eBookConfig.course,
+            course_name: eBookConfig.course,
         });
     }
     publishMessage(mess);
@@ -407,7 +501,7 @@ async function showPeerEnableVote2() {
         div_id: currentQuestion,
         event: "sendmessage",
         act: `to:system:${mess}`,
-        course: eBookConfig.course,
+        course_name: eBookConfig.course,
     });
 
     // send a request to get a peer response and display it.
@@ -460,6 +554,61 @@ async function showPeerEnableVote2() {
             cq.style.display = "block";
         });
     }
+}
+
+async function setupPeerGroup() {
+    let jsonHeaders = new Headers({
+        "Content-type": "application/json; charset=utf-8",
+        Accept: "application/json",
+    });
+
+    let request = new Request("/runestone/admin/course_students", {
+        method: "GET",
+        headers: jsonHeaders,
+    });
+
+    var studentList = {
+        s1: "User 1",
+        s2: "User 2",
+        s3: "User 3",
+        s4: "User 4",
+        s5: "User 5",
+    }
+
+    try {
+        let response = await fetch(request);
+        if (!response.ok) {
+            console.error(`Failed to get the student list for groups! ${response.statusText}`);
+        } else {
+            studentList = await response.json();
+        }
+    } catch (e) {
+        console.log(`Error: ${e}`);
+    }
+
+
+
+    let select = document.getElementById("assignment_group");
+    for (let [sid, name] of Object.entries(studentList)) {
+        let opt = document.createElement("option");
+        peerList = localStorage.getItem("peerList");
+        if (!peerList) {
+            peerList = "";
+        }
+        opt.value = sid;
+        opt.innerHTML = `${studentList[sid]} (${sid})`;
+        if (peerList.indexOf(sid) > -1) {
+            opt.selected = true;
+        }
+        select.appendChild(opt);
+    }
+    // Make the select element searchable with multiple selections
+    $('.assignment_partner_select').select2({
+        placeholder: "Select up to 4 team members",
+        allowClear: true,
+        maximumSelectionLength: 4,
+    });
+
 }
 
 $(function () {

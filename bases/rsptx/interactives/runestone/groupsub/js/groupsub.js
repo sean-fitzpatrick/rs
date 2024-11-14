@@ -26,14 +26,21 @@ class GroupSub extends RunestoneBase {
         this.divid = orig.id;
         self.group = []
         this.limit = this.origElem.dataset.size_limit;
-
+        this.isPretext = document.body.classList.contains("pretext");
         // Create submit button
         let butt = document.createElement("button");
         butt.type = "button";
         butt.classList.add("btn", "btn-success")
         butt.innerHTML = "Submit Group"
         butt.onclick = this.submitAll.bind(this);
-        let container = document.getElementById("groupsub_button")
+        var container;
+        if (this.isPretext) {
+            container = opts.orig.querySelector(".groupsub_button");
+
+        } else {
+            container = document.getElementById("groupsub_button")
+        }
+
         container.appendChild(butt);
 
 
@@ -43,21 +50,29 @@ class GroupSub extends RunestoneBase {
         // get the classlist to populate
         if (eBookConfig.useRunestoneServices) {
             // get classlist from admin/course_students
-            let request = new Request("/runestone/admin/course_students", {
+            let request = new Request("/ns/auth/course_students", {
                 method: "GET",
                 headers: this.jsonHeaders,
             });
             try {
                 let response = await fetch(request);
                 if (!response.ok) {
-                    throw new Error("Failed to save the log entry");
+                    throw new Error("Failed to get the list of students");
                 }
-                this.studentList = await response.json();
+                if (response.redirected) {
+                    alert("You must be logged in to use this feature");
+                    return;
+                }
+                let resp = await response.json();
+                this.studentList = resp.detail.students;
             } catch (e) {
                 if (this.isTimed) {
-                    alert(`Error: Your action was not saved! The error was ${e}`);
+                    alert(`Error: Failed to get the list of students. The error was ${e}`);
                 }
                 console.log(`Error: ${e}`);
+                this.studentList = {
+                    failed: "Failed to load students - logout and back in",
+                }
             }
 
         } else {
@@ -69,7 +84,13 @@ class GroupSub extends RunestoneBase {
                 s5: "User 5",
             }
         }
-        let select = document.getElementById("assignment_group");
+        var select;
+        if (this.isPretext) {
+            select = this.origElem.querySelector(".assignment_partner_select");
+        } else {
+            select = document.getElementById("assignment_group");
+        }
+        this.picker = select;
         for (let [sid, name] of Object.entries(this.studentList)) {
             let opt = document.createElement("option");
             opt.value = sid;
@@ -87,9 +108,9 @@ class GroupSub extends RunestoneBase {
 
     async submitAll() {
         // find all components on the page and submit them for all group members
-        let picker = document.getElementById("assignment_group")
+
         let group = []
-        for (let student of picker.selectedOptions) {
+        for (let student of this.picker.selectedOptions) {
             group.push(student.value);
         }
         // If the leader forgets to add themselves, add them here.
@@ -106,12 +127,23 @@ class GroupSub extends RunestoneBase {
             act: group.join(","),
             div_id: window.location.pathname,
         });
+        var componentList = [];
+        if (this.isPretext) {
+            let container = this.origElem.closest("section.groupwork");
+            for (let id of Object.keys(componentMap)) {
+                if (container.querySelector(`#${id}`)) {
+                    componentList.push(componentMap[id]);
+                }
+            }
+        } else {
+            componentList = window.allComponents;
+        }
         for (let student of group) {
-            for (let question of window.allComponents) {
-                try{
+            for (let question of componentList) {
+                try {
                     console.log(`${student} ${question}`)
                     await question.logCurrentAnswer(student)
-                } catch(e) {
+                } catch (e) {
                     console.log(`failed to submit ${question} : ${e}`)
                 }
             }

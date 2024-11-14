@@ -10,10 +10,12 @@ Response Helpers for FastAPI
 #
 # Standard library
 # ----------------
+import datetime
 import json
 import os
 from pathlib import Path
 import re
+import sys
 from typing import Any, List
 
 # Third-party imports
@@ -106,3 +108,48 @@ def get_webpack_static_imports(course):
         wp_imports = json.load(f)
 
     return wp_imports
+
+
+# the parts of the manifest file that are interesting for us are:
+# {
+#   "index.html": {
+#     "file": "assets/index-BdZ5doun.js",
+#     "src": "index.html",
+#     "isEntry": true,
+#     "dynamicImports": [
+#       "node_modules/web-vitals/dist/web-vitals.js"
+#     ],
+#     "css": [
+#       "assets/index-Bz00Bcvm.css"
+#     ],
+# ... }
+
+
+def get_react_imports(reactdir):
+    # Import webpack CSS and JS.
+    with open(
+        Path(
+            reactdir,
+            ".vite",
+            "manifest.json",
+        ),
+        encoding="utf-8",
+    ) as f:
+        react_imports = json.load(f)
+
+    indexfile = react_imports["index.html"]["file"]
+    cssfiles = react_imports["index.html"]["css"]
+    react_imports["js"] = [indexfile]
+    react_imports["css"] = cssfiles
+
+    return react_imports
+
+
+def canonical_utcnow():
+    """
+    Return a datetime object that is the current time in UTC without timezone information.
+    """
+    if sys.version_info.minor >= 11:
+        return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    else:
+        return datetime.datetime.utcnow()

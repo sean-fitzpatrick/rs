@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 
 # Local application imports
 # -------------------------
+
 from rsptx.auth.session import auth_manager
 from rsptx.templates import template_folder
 from rsptx.db.crud import (
@@ -25,13 +26,16 @@ from rsptx.db.crud import (
     fetch_course,
     fetch_courses_for_user,
     fetch_course_instructors,
+    fetch_deadline_exception,
     fetch_last_page,
     fetch_library_book,
     update_user,
+    uses_lti,
 )
 from rsptx.logging import rslogger
 from rsptx.response_helpers.core import make_json_response
 from rsptx.auth.session import is_instructor
+from rsptx.grading_helpers.core import adjust_deadlines
 
 
 # .. _APIRouter config:
@@ -61,17 +65,29 @@ async def index(request: Request, user=Depends(auth_manager)):
     rslogger.debug(f"{instructors=}")
     templates = Jinja2Templates(directory=template_folder)
     books = await fetch_library_book(course.base_course)
-    books = [books]
+    if books is None:
+        books = []
+    else:
+        books = [books]
     row = await fetch_last_page(user, course_name)
     if row:
         last_page_url = row.last_page_url
     else:
         last_page_url = None
-
+    is_lti_course = False
+    if course and await uses_lti(course.id):
+        is_lti_course = True
     course_list = await fetch_courses_for_user(user.id)
     course_list.sort(key=lambda x: x.id, reverse=True)
     user_is_instructor = await is_instructor(request)
-    assignments = await fetch_assignments(course_name, is_visible=True)
+    assignments = await fetch_assignments(course_name)
+    accommodations = await fetch_deadline_exception(
+        course.id, user.username, fetch_all=True
+    )
+    # filter assignments based on deadline exceptions
+    assignment_ids = [a.assignment_id for a in accommodations]
+    assignments = [a for a in assignments if a.visible or a.id in assignment_ids]
+    assignments = adjust_deadlines(assignments, accommodations)
     assignments.sort(key=lambda x: x.duedate, reverse=True)
     stats_list = await fetch_all_assignment_stats(course_name, user.id)
     stats = {}
@@ -95,6 +111,7 @@ async def index(request: Request, user=Depends(auth_manager)):
             "course_list": course_list,
             "is_instructor": user_is_instructor,
             "has_discussion_group": any([book.social_url for book in books]),
+            "lti": is_lti_course,
         },
     )
 

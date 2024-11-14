@@ -11,7 +11,6 @@
 # Standard library
 # ----------------
 import json
-from datetime import datetime
 import re
 from typing import Optional
 
@@ -48,6 +47,7 @@ from rsptx.db.crud import (
     fetch_chapter_for_subchapter,
     fetch_course,
     fetch_course_practice,
+    fetch_source_code,
     fetch_user_chapter_progress,
     fetch_user_sub_chapter_progress,
     fetch_user,
@@ -55,11 +55,13 @@ from rsptx.db.crud import (
     update_sub_chapter_progress,
     update_user_state,
 )
-from rsptx.response_helpers.core import make_json_response
+from rsptx.grading_helpers import grade_submission, score_reading_page
+from rsptx.response_helpers.core import make_json_response, canonical_utcnow
 from rsptx.db.models import (
     AuthUserValidator,
     CodeValidator,
     runestone_component_dict,
+    SourceCodeValidator,
     UseinfoValidation,
 )
 from rsptx.validation.schemas import (
@@ -68,6 +70,7 @@ from rsptx.validation.schemas import (
     LogItemIncoming,
     LogRunIncoming,
     TimezoneRequest,
+    ReadingAssignmentSpec,
 )
 from rsptx.auth.session import auth_manager
 from rsptx.practice.core import potentially_change_flashcard
@@ -114,7 +117,7 @@ async def log_book_event(
         rslogger.info(f"user {user.username} is submitting work for {entry.sid}")
 
     # Always use the server's time.
-    entry.timestamp = datetime.utcnow()
+    entry.timestamp = canonical_utcnow()
     # The endpoint receives a ``course_name``, but the ``useinfo`` table calls this ``course_id``. Rename it.
     useinfo_dict = entry.dict()
     useinfo_dict["course_id"] = useinfo_dict.pop("course_name")
@@ -129,9 +132,8 @@ async def log_book_event(
     rslogger.debug(useinfo_entry)
     idx = await create_useinfo_entry(useinfo_entry)
     response_dict = dict(timestamp=entry.timestamp)
-    if entry.event in EVENT2TABLE:
-        create_answer_table = True
-        rcd = runestone_component_dict[EVENT2TABLE[entry.event]]
+    if entry.event in EVENT2TABLE or entry.event == "selectquestion":
+        create_answer_table = True and entry.event != "selectquestion"
         if entry.event == "unittest":
             # info we need looks like: "act":"percent:100.0:passed:2:failed:0"
             if not re.match(r"^percent:\d+(\.\d+)?:passed:\d+:failed:\d+$", entry.act):
@@ -143,8 +145,8 @@ async def log_book_event(
             entry.passed = int(ppf[3])
             entry.failed = int(ppf[5])
             entry.answer = ""
-            entry.correct = ppf[1] == "100.0"
             entry.percent = float(ppf[1])
+            entry.correct = entry.percent >= 100
         elif entry.event == "timedExam":
             if entry.act in ["start", "pause", "resume"]:
                 # We don't need these in the answer table but want the event to be timedExam.
@@ -153,6 +155,7 @@ async def log_book_event(
             entry.answer = json.loads(useinfo_dict["answer"])
 
         if create_answer_table:
+            rcd = runestone_component_dict[EVENT2TABLE[entry.event]]
             valid_table = rcd.validator.from_orm(entry)  # type: ignore
             # Do server-side grading if needed.
             if feedback := await is_server_feedback(entry.div_id, user.course_name):
@@ -162,6 +165,9 @@ async def log_book_event(
 
             ans_idx = await create_answer_table_entry(valid_table, entry.event)
             rslogger.debug(ans_idx)
+        if entry.event != "timedExam":
+            scoreSpec = await grade_submission(user, entry)
+            response_dict.update(scoreSpec.dict())
 
     if idx:
         return make_json_response(status=status.HTTP_201_CREATED, detail=response_dict)
@@ -236,8 +242,11 @@ async def runlog(request: Request, response: Response, data: LogRunIncoming):
     # everything after this assumes that the user is logged in
 
     useinfo_dict = data.dict()
+    edit_distance = useinfo_dict.pop("editDist", None)
+    cps = useinfo_dict.pop("changesPerSecond", None)
     useinfo_dict["course_id"] = useinfo_dict.pop("course")
-    useinfo_dict["timestamp"] = datetime.utcnow()
+    utcnow = canonical_utcnow()
+    useinfo_dict["timestamp"] = utcnow
     useinfo_dict["emessage"] = data.errinfo
     if data.errinfo != "success":
         useinfo_dict["event"] = "ac_error"
@@ -254,6 +263,8 @@ async def runlog(request: Request, response: Response, data: LogRunIncoming):
     useinfo_dict["acid"] = useinfo_dict.pop("div_id")
     if data.to_save:
         useinfo_dict["course_id"] = request.state.user.course_id
+        useinfo_dict["cps"] = cps
+        useinfo_dict["edit_distance"] = edit_distance
         entry = CodeValidator(**useinfo_dict)
         await create_code_entry(entry)
 
@@ -340,7 +351,7 @@ async def updatelastpage(
             lpd["last_page_chapter"] = parts[-2]
 
         lpd["last_page_subchapter"] = subchapter
-        lpd["last_page_accessed_on"] = datetime.utcnow()
+        lpd["last_page_accessed_on"] = canonical_utcnow()
         lpd["user_id"] = request.state.user.id
 
         lpdo: LastPageData = LastPageData(**lpd)
@@ -553,3 +564,42 @@ async def create_upload_file(request: Request, file: UploadFile, div_id: str):
     )
 
     return {"filename": file.filename}
+
+
+@router.post("/update_reading_score")
+async def update_reading_score(request: Request, data: ReadingAssignmentSpec):
+    if not request.state.user:
+        raise HTTPException(401)
+    rslogger.debug(f"Updating reading score for {request.state.user.username}")
+    rslogger.debug(data)
+    score = await score_reading_page(data, request.state.user)
+    return make_json_response(detail="Success")
+
+
+@router.get("/get_datafile")
+async def get_datafile(
+    request: Request,
+    course_id: str,
+    acid: str,
+    response_class=JSONResponse,
+):
+    """
+    Get the source code for a given resource id (acid) in a given course.
+    Normally these are datafiles that are stored here.
+
+    This API does not require a user to be logged in.
+
+    returns: JSONResponse - file contents
+    """
+    course = await fetch_course(course_id)
+
+    file_contents = await fetch_source_code(
+        acid, course.base_course, course.course_name
+    )
+
+    if file_contents:
+        file_contents = file_contents.main_code
+    else:
+        file_contents = None
+
+    return make_json_response(detail=file_contents)

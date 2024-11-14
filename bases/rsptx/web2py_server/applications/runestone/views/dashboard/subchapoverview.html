@@ -25,6 +25,7 @@
             <option value="dividmin" {{if request.vars.tablekind == 'dividmin':}}selected{{pass}}>First Interaction with all Activities</option>
             <option value="dividmax" {{if request.vars.tablekind == 'dividmax':}}selected{{pass}}>Last Interaction with all Activities</option>
             <option value="dividnum" {{if request.vars.tablekind == 'dividnum':}}selected{{pass}}>Number of Interactions with each Activity</option>
+            <option value="correctcount" {{if request.vars.tablekind == 'correctcount':}}selected{{pass}}>Number of Activities Correct</option>
         </select>
 
         <button type="submit" name="action" value="tocsv">Download CSV</button>
@@ -38,6 +39,9 @@
         var frozenColumns = 1;
         if (window.location.href.search("sccount") < 0) {
             frozenColumns = 2;
+        }
+        if (window.location.href.search("correctcount") >= 0) {
+            frozenColumns = 1;
         }
         columns = [{data: 'chapter_label'}]
         for (let k of Object.keys(tbl_data[0]).slice(1)) {
@@ -54,6 +58,7 @@
             dropdownMenu: true,
             licenseKey: 'non-commercial-and-evaluation',
             columns:columns,
+            manualColumnResize: true,
         });
 
     </script>

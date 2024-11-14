@@ -42,7 +42,7 @@ import toast from "react-hot-toast";
  */
 export const fetchAssignments = createAsyncThunk(
     "assignment/fetchAssignments",
-    async (neededForGetState, { getState }) => {
+    async (neededForGetState, { getState, dispatch }) => {
         const response = await fetch("/assignment/instructor/assignments");
         const data = await response.json();
         let state = getState();
@@ -51,7 +51,7 @@ export const fetchAssignments = createAsyncThunk(
             console.warn("Error fetching assignments");
             if (response.status === 401) {
                 console.warn("Unauthorized to fetch assignments");
-                state.assignment.isAuthorized = false;
+                dispatch(setIsAuthorized(false));
                 return;
             }
         }
@@ -395,7 +395,7 @@ export const assignSlice = createSlice({
     initialState: {
         id: 0,
         name: "",
-        desc: "",
+        description: "",
         duedate: defaultDeadline,
         points: 1,
         visible: true,
@@ -411,6 +411,8 @@ export const assignSlice = createSlice({
         search_results: [],
         question_count: 0,
         isAuthorized: true,
+        released: false,
+        selectedAssignments: [],
     },
     reducers: {
 
@@ -424,7 +426,7 @@ export const assignSlice = createSlice({
             state.name = action.payload;
         },
         setDesc: (state, action) => {
-            state.desc = action.payload;
+            state.description = action.payload;
         },
         setDue: (state, action) => {
             // action.payload is a Date object coming from the date picker or a string from the server
@@ -472,6 +474,9 @@ export const assignSlice = createSlice({
             console.log("addExercise", action.payload)
             state.exercises.push(action.payload);
         },
+        setIsAuthorized: (state, action) => {
+            state.isAuthorized = action.payload;
+        },
         addAssignment: (state, action) => {
             state.all_assignments.push(action.payload);
         },
@@ -509,6 +514,9 @@ export const assignSlice = createSlice({
                 total += action.payload.adjustment;
             }
             state.points = total;
+        },
+        setSelected: (state, action) => {
+            state.selectedAssignments = action.payload;
         }
     },
     extraReducers(builder) {
@@ -595,6 +603,8 @@ export const {
     sumPoints,
     updateExercise,
     updateField,
+    setIsAuthorized,
+    setSelected,
 } = assignSlice.actions;
 
 // The function below is called a selector and allows us to select a value from
@@ -606,7 +616,7 @@ export const {
 export const selectAll = (state) => state.assignment;
 export const selectAllAssignments = (state) => state.assignment.all_assignments;
 export const selectAssignmentId = (state) => state.assignment.id;
-export const selectDesc = (state) => state.assignment.desc;
+export const selectDesc = (state) => state.assignment.description;
 export const selectDue = (state) => state.assignment.duedate;
 export const selectExercises = (state) => state.assignment.exercises;
 export const selectId = (state) => state.assignment.id;
@@ -623,4 +633,5 @@ export const selectQuestionCount = (state) => state.assignment.question_count;
 export const selectSearchResults = (state) => state.assignment.search_results;
 export const selectTimeLimit = (state) => state.assignment.time_limit;
 export const selectVisible = (state) => state.assignment.visible;
+export const selectSelectedAssignments = (state) => state.assignment.selectedAssignments;
 export default assignSlice.reducer;

@@ -18,6 +18,8 @@
 import { pageProgressTracker } from "./bookfuncs.js";
 //import "./../styles/runestone-custom-sphinx-bootstrap.css";
 
+var NO_DECORATE = ["parsonsMove", "showeval", "video", "poll", "view_toggle",
+    "dashboard", "selectquestion", "codelens", "peer", "shortanswer"]
 export default class RunestoneBase {
     constructor(opts) {
         this.component_ready_promise = new Promise(
@@ -100,6 +102,9 @@ export default class RunestoneBase {
         if (typeof this.percent === "number") {
             eventInfo.percent = this.percent;
         }
+        if (window.assignmentId) {
+            eventInfo.assignment_id = window.assignmentId;
+        }
         if (
             eBookConfig.isLoggedIn &&
             eBookConfig.useRunestoneServices &&
@@ -131,6 +136,10 @@ export default class RunestoneBase {
             this.optional == false
         ) {
             pageProgressTracker.updateProgress(eventInfo.div_id);
+        }
+        // if the event is in the NO_DECORATE list then don't decorate the status
+        if (NO_DECORATE.indexOf(eventInfo.event) === -1) {
+            this.decorateStatus();
         }
         return post_return;
     }
@@ -164,6 +173,20 @@ export default class RunestoneBase {
                     Status: ${response.status}`);
             }
             post_return = await response.json();
+            let scoreSpec = post_return.detail;
+            let gradeBox = null;
+            if (this.selector_id) {
+                let selector_id = this.selector_id.replace(
+                    "-toggleSelectedQuestion",
+                    ""
+                );
+                gradeBox = document.getElementById(`${selector_id}_score`);
+            } else {
+                gradeBox = document.getElementById(`${this.divid}_score`);
+            }
+            if (gradeBox && !this.isTimed && scoreSpec.score) {
+                this.updateScores(gradeBox, scoreSpec);
+            }
         } catch (e) {
             let detail = "none";
             if (post_return && post_return.detail) {
@@ -183,6 +206,39 @@ export default class RunestoneBase {
         }
         return post_return;
     }
+    // update the score for the question and the total score
+    // the presence of the gradeBox is used to determine if we are on an assignment page.
+    updateScores(gradeBox, scoreSpec) {
+        if (!scoreSpec.assigned || scoreSpec.score === null) {
+            document.getElementById(`${this.divid}_message`).innerHTML = "Score not updated.  Submissions are closed.";
+            return;
+        }
+        let scoreSpan = gradeBox.getElementsByClassName("qscore")[0];
+        if (scoreSpan) {
+            scoreSpan.innerHTML = scoreSpec.score.toFixed(1);
+        }
+        let allScores = document.getElementsByClassName("qscore");
+        let allmax = document.getElementsByClassName("qmaxscore");
+        let total = 0;
+        let max = 0;
+        for (let i = 0; i < allScores.length; i++) {
+            total += parseFloat(allScores[i].innerHTML);
+            max += parseFloat(allmax[i].innerHTML);
+        }
+        let totalSpan = document.getElementById("total_score");
+        if (totalSpan) {
+            totalSpan.innerHTML = total.toFixed(1);
+        }
+        let maxSpan = document.getElementById("total_max");
+        if (maxSpan) {
+            maxSpan.innerHTML = max;
+        }
+        let percentSpan = document.getElementById("total_percent");
+        if (percentSpan) {
+            percentSpan.innerHTML = ((total / max) * 100).toFixed(2);
+        }
+    }
+
     // .. _logRunEvent:
     //
     // logRunEvent
@@ -222,19 +278,19 @@ export default class RunestoneBase {
                     alert(`Failed to save your code
                         Status is ${response.status}
                         Detail: ${JSON.stringify(
-                            post_promise.detail,
-                            null,
-                            4
-                        )}`);
+                        post_promise.detail,
+                        null,
+                        4
+                    )}`);
                 } else {
                     console.log(
                         `Did not save the code.
                          Status: ${response.status}
                          Detail: ${JSON.stringify(
-                             post_promise.detail,
-                             null,
-                             4
-                         )}`
+                            post_promise.detail,
+                            null,
+                            4
+                        )}`
                     );
                 }
             } else {
@@ -381,6 +437,7 @@ export default class RunestoneBase {
         } else {
             this.checkLocalStorage();
         }
+        this.decorateStatus();
     }
     shouldUseServer(data) {
         // returns true if server data is more recent than local storage or if server storage is correct
@@ -512,11 +569,16 @@ export default class RunestoneBase {
     }
 
     decorateStatus() {
+        if (this.isTimed || eBookConfig.peer) return;
         let rsDiv = $(this.containerDiv).closest("div.runestone")[0];
+        if (!rsDiv) return;
+        rsDiv.classList.remove("notAnswered");
+        rsDiv.classList.remove("isInCorrect");
+        rsDiv.classList.remove("isCorrect");
         if (this.correct) {
             rsDiv.classList.add("isCorrect");
         } else {
-            if (this.correct === null) {
+            if (this.correct === null || typeof this.correct === "undefined") {
                 rsDiv.classList.add("notAnswered");
             } else {
                 rsDiv.classList.add("isInCorrect");

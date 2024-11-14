@@ -214,8 +214,7 @@ function autoGrade() {
                         `${index + 1} of ${student_array.length}: ${student}
                         <a href="/runestone/dashboard/questiongrades?sid=${encodeURIComponent(
                             student
-                        )}&assignment_id=${encodeURIComponent(assignment)}">${
-                            students[student]
+                        )}&assignment_id=${encodeURIComponent(assignment)}">${students[student]
                         }</a>
                         ${res.message}
                         Score: ${res.total_mess} <br>`
@@ -564,9 +563,9 @@ function createGradingPanel(element, acid, studentId, multiGrader) {
             obj.open(
                 "GET",
                 "/runestone/admin/getGradeComments?acid=" +
-                    acid +
-                    "&sid=" +
-                    encodeURIComponent(studentId),
+                acid +
+                "&sid=" +
+                encodeURIComponent(studentId),
                 true
             );
             obj.send(
@@ -1713,9 +1712,9 @@ function remove_question(question_name) {
     var assignment_id = getAssignmentId();
     $.getJSON(
         "delete_assignment_question/?name=" +
-            question_name +
-            "&assignment_id=" +
-            assignment_id,
+        question_name +
+        "&assignment_id=" +
+        assignment_id,
         {
             variable: "variable",
         }
@@ -1788,7 +1787,7 @@ function create_question(formdata) {
     var template = formdata.template.value;
     var qcode = formdata.qcode.value;
     var lines = qcode.split("\n");
-    var htmlsrc = formdata.qrawhtml.value;
+    var htmlsrc = base64Encode(formdata.qrawhtml.value);
     var name = find_name(lines);
     var question = formdata.qcode.value;
     var difficulty = formdata.difficulty;
@@ -2055,8 +2054,13 @@ async function renderRunestoneComponent(componentSrc, whereDiv, moreOpts) {
                     constrainbc: constrainbc,
                 };
                 jQuery.get("/runestone/admin/question_text", data, function (obj) {
-                    $("#editRST").val(JSON.parse(obj));
+                    let res = JSON.parse(obj);
+                    let qText = res.question_text;
+                    let isprivate = res.is_private;
+                    $("#editRST").val(qText);
+                    $("#change_privacy").prop("checked", isprivate);
                 });
+
             });
             $(`#${whereDiv}`).append(editButton);
             let closeButton = document.createElement("button");
@@ -2252,7 +2256,7 @@ function edit_question(form) {
     let orig_divid = $("#modal-preview").data("orig_divid");
     var question_text = form.editRST.value;
     var lines = form.editRST.value.split("\n");
-    var htmlsrc = form.qrawhtml.value;
+    var htmlsrc = base64Encode(form.qrawhtml.value);
     var name = find_name(lines);
     var isp = document.getElementById("change_privacy").checked;
     data = {
@@ -2560,7 +2564,10 @@ function populateEditor(qname) {
     };
     $("#addTags").select2();
     jQuery.get("/runestone/admin/question_text", data, function (obj) {
-        $("#editRST").val(JSON.parse(obj));
+        let res = JSON.parse(obj);
+        let qText = res.question_text;
+        $("#editRST").val(qText);
+        $("#change_privacy").prop("checked", res.isprivate);
     });
 }
 
@@ -2577,10 +2584,28 @@ function generateLTIKeys() {
         if (data.consumer) {
             $("#ckey_value").html(data.consumer);
             $("#secret_value").html(data.secret);
+            $("#create_lti").prop("disabled", true);
+            $("#delete_lti").prop("disabled", false);
         } else {
             alert("Hmmm, failed to create keys");
         }
     });
+}
+
+function deleteLTIKeys() {
+    let res = confirm("Really delete the LTI keys?");
+    if (res) {
+        $.getJSON("/assignment/instructor/cancel_lti", {}, function (data) {
+            if (data.detail.status == "success") {
+                $("#ckey_value").html("");
+                $("#secret_value").html("");
+                $("#create_lti").prop("disabled", false);
+                $("#delete_lti").prop("disabled", true);
+            } else {
+                alert("Failed to delete keys");
+            }
+        });
+    }
 }
 
 function copyElementToClipboard(elid) {
@@ -2596,6 +2621,23 @@ function copyElementToClipboard(elid) {
     /* Copy the text inside the text field */
     document.execCommand("copy");
     document.body.removeChild(el);
+}
+
+// This is a good alternative to btoa for encoding strings as it will work for utf8
+// characters.  On the python side you can use base64.b64decode to decode the string
+// but you will further need to decode it as utf-8
+function base64Encode(str) {
+    // Create a new TextEncoder instance
+    const encoder = new TextEncoder();
+    // Encode the string as a Uint8Array
+    const data = encoder.encode(str);
+    // Convert the byte array to a binary string
+    let binaryString = '';
+    for (let i = 0; i < data.length; i++) {
+        binaryString += String.fromCharCode(data[i]);
+    }
+    // Use btoa to encode the binary string to Base64
+    return btoa(binaryString);
 }
 
 if (window.location.href.includes("runestone/admin/assignments")) {

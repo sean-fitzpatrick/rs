@@ -18,19 +18,19 @@ export default class LiveCode extends ActiveCode {
         this.API_KEY = "67033pV7eUUvqo07OJDIV8UZ049aLEK1";
         this.USE_API_KEY = true;
         this.JOBE_SERVER = eBookConfig.jobehost || eBookConfig.host;
-        this.resource = eBookConfig.proxyuri_runs || "/runestone/proxy/jobeRun";
+        this.resource = eBookConfig.proxyuri_runs || "/ns/rsproxy/jobeRun";
         this.jobePutFiles =
-            eBookConfig.proxyuri_files || "/runestone/proxy/jobePushFile/";
+            eBookConfig.proxyuri_files || "/ns/rsproxy/jobePushFile/";
         this.jobeCheckFiles =
-            eBookConfig.proxyuri_files || "/runestone/proxy/jobeCheckFile/";
+            eBookConfig.proxyuri_files || "/ns/rsproxy/jobeCheckFile/";
         // TODO:  should add a proper put/check in pavement.tmpl as this is misleading and will break on runestone
         this.div2id = {};
-        if (this.stdin) {
+        if (typeof this.stdin !== "undefined") {
             this.createInputElement();
         }
         this.createErrorOutput();
     }
-    outputfun(a) {}
+    outputfun(a) { }
     createInputElement() {
         var label = document.createElement("label");
         label.for = this.divid + "_stdin";
@@ -44,7 +44,7 @@ export default class LiveCode extends ActiveCode {
         this.outerDiv.appendChild(input);
         this.stdin_el = input;
     }
-    createErrorOutput() {}
+    createErrorOutput() { }
 
     /*  Main runProg method for livecode
      *
@@ -122,6 +122,11 @@ export default class LiveCode extends ActiveCode {
             let m = source.match(classMatch);
             if (m) {
                 sourcefilename = m[1] + ".java";
+            } else {
+                alert(
+                    "Error: Could not find the class name in the source, this will not compile."
+                );
+                throw new Error("No class name in source");
             }
             // this will be unit test code
             m = this.suffix.match(classMatch);
@@ -226,9 +231,9 @@ export default class LiveCode extends ActiveCode {
             public static void main(String[] args) {
                 CodeTestHelper.resetFinalResults();
                 Result result = JUnitCore.runClasses(${testdrivername.replace(
-                    ".java",
-                    ".class"
-                )});
+            ".java",
+            ".class"
+        )});
                 System.out.println(CodeTestHelper.getFinalResults());
 
                 int total = result.getRunCount();
@@ -339,7 +344,7 @@ export default class LiveCode extends ActiveCode {
                         this.parsedOutput.pct =
                             this.parsedOutput.passed =
                             this.parsedOutput.failed =
-                                0;
+                            0;
                     }
                     this.unit_results = `percent:${this.parsedOutput.pct}:passed:${this.parsedOutput.passed}:failed:${this.parsedOutput.failed}`;
                 }
@@ -524,7 +529,7 @@ export default class LiveCode extends ActiveCode {
         }
         var targetDiv = this.codelens.id;
 
-        let request = new Request("/runestone/proxy/pytutor_trace", {
+        let request = new Request("/ns/rsproxy/pytutor_trace", {
             method: "POST",
             body: JSON.stringify(myVars),
             headers: this.jsonHeaders,
@@ -664,11 +669,11 @@ function unescapeHtml(safe) {
 }
 function escapeHtml(str) {
     if (str) {
-	return str
-	    .replace(/&/g, '&amp;')
-	    .replace(/</g, '&lt;')
-	    .replace(/>/g, '&gt;')
-	    .replace(/'/g, '&#x27;')
-	    .replace(/"/g, '&quot;');
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/'/g, '&#x27;')
+            .replace(/"/g, '&quot;');
     }
 }

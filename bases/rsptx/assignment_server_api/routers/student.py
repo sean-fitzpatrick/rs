@@ -32,19 +32,26 @@ from rsptx.db.crud import (
     fetch_all_assignment_stats,
     fetch_grade,
     upsert_grade,
+    uses_lti,
     fetch_course,
     fetch_all_course_attributes,
+    fetch_deadline_exception,
     fetch_one_assignment,
     fetch_assignment_questions,
     fetch_question_grade,
     fetch_user_chapter_progress,
     fetch_user_sub_chapter_progress,
 )
+from rsptx.grading_helpers.core import check_for_exceptions
 
 from rsptx.db.models import GradeValidator, UseinfoValidation, CoursesValidator
 from rsptx.auth.session import auth_manager, is_instructor
 from rsptx.templates import template_folder
-from rsptx.response_helpers.core import make_json_response, get_webpack_static_imports
+from rsptx.response_helpers.core import (
+    make_json_response,
+    get_webpack_static_imports,
+    canonical_utcnow,
+)
 from rsptx.configuration import settings
 
 
@@ -75,10 +82,20 @@ async def get_assignments(
 
     sid = user.username
     course = await fetch_course(user.course_name)
-
+    is_lti_course = False
+    if course and await uses_lti(course.id):
+        is_lti_course = True
     templates = Jinja2Templates(directory=template_folder)
     user_is_instructor = await is_instructor(request, user=user)
-    assignments = await fetch_assignments(course.course_name, is_visible=True)
+    # fetch all assignments, we will filter them using the deadline_exception data
+    assignments = await fetch_assignments(course.course_name)
+    # fetch all deadline exceptions for the user
+    accommodations = await fetch_deadline_exception(
+        course.id, user.username, fetch_all=True
+    )
+    # filter assignments based on deadline exceptions
+    assignment_ids = [a.assignment_id for a in accommodations]
+    assignments = [a for a in assignments if a.visible or a.id in assignment_ids]
     assignments.sort(key=lambda x: x.duedate, reverse=True)
     stats_list = await fetch_all_assignment_stats(course.course_name, user.id)
     stats = {}
@@ -95,6 +112,7 @@ async def get_assignments(
             "request": request,
             "is_instructor": user_is_instructor,
             "student_page": True,
+            "lti": is_lti_course,
         },
     )
 
@@ -202,13 +220,17 @@ async def doAssignment(
 
         return RedirectResponse("/assignment/student/chooseAssignment")
 
+    deadline_exception = await check_for_exceptions(user, assignment_id)
+
     if (
         assignment.visible == "F"
         or assignment.visible is None
         or assignment.visible == False
     ):
-        if await is_instructor(request) is False:
-            rslogger.error(f"Attempt to access invisible assignment {assignment_id} by {user.username}")
+        if not (await is_instructor(request) or deadline_exception.visible):
+            rslogger.error(
+                f"Attempt to access invisible assignment {assignment_id} by {user.username}"
+            )
             return RedirectResponse("/assignment/student/chooseAssignment")
 
     if assignment.points is None:
@@ -224,7 +246,14 @@ async def doAssignment(
     # proficiency exam that you are writing as an rst page that the page containing
     # the exam should be linked to a toctree somewhere so that it gets added.
     #
-
+    # write a sql insert statement to add a visible exception for testuser1 for assignment 187
+    # insert into deadline_exceptions (course_id, assignment_id, visible, time_limit, due_date, user_id)
+    # values ('testcourse', 187, 1, 1, '2020-12-31 23:59:59', 1);
+    if assignment.is_timed:
+        if assignment.time_limit and deadline_exception.time_limit:
+            assignment.time_limit = (
+                assignment.time_limit * deadline_exception.time_limit
+            )
     questions = await fetch_assignment_questions(assignment_id)
 
     await create_useinfo_entry(
@@ -233,7 +262,7 @@ async def doAssignment(
             act="viewassignment",
             div_id=assignment.name,
             event="page",
-            timestamp=datetime.datetime.utcnow(),
+            timestamp=canonical_utcnow(),
             course_id=course.course_name,
         )
     )
@@ -304,6 +333,15 @@ async def doAssignment(
             question_type=q.Question.question_type,
             activities_required=q.AssignmentQuestion.activities_required,
         )
+        if q.AssignmentQuestion.autograde == "manual":
+            info["how_graded"] = "Needs Manual Grading"
+        elif q.AssignmentQuestion.which_to_grade == "first_answer":
+            info["how_graded"] = "First Answer"
+        elif q.AssignmentQuestion.which_to_grade == "last_answer":
+            info["how_graded"] = "Last Answer"
+        elif q.AssignmentQuestion.which_to_grade == "best_answer":
+            info["how_graded"] = "Best Answer"
+
         if q.AssignmentQuestion.reading_assignment:
             # add to readings
             if chap_name not in readings:
@@ -397,15 +435,17 @@ async def doAssignment(
 
     timezoneoffset = parsed_js.get("tz_offset", None)
 
-    timestamp = datetime.datetime.utcnow()
+    timestamp = canonical_utcnow()
     deadline = assignment.duedate
     if timezoneoffset:
         deadline = deadline + datetime.timedelta(hours=float(timezoneoffset))
-
+    assignment.duedate = assignment.duedate.strftime("%a %d, %b %Y %I:%m %p")
     enforce_pastdue = False
     if assignment.enforce_due and timestamp > deadline:
         enforce_pastdue = True
-
+    overdue = False
+    if timestamp > deadline:
+        overdue = True
     templates = Jinja2Templates(directory=template_folder)
     context = dict(  # This is all the variables that will be used in the doAssignment.html document
         course=course,
@@ -425,6 +465,7 @@ async def doAssignment(
         origin=c_origin,
         is_submit=grade.is_submit,
         is_graded=is_graded,
+        overdue=overdue,
         enforce_pastdue=enforce_pastdue,
         ptx_js_version=course_attrs.get("ptx_js_version", "0.2"),
         webwork_js_version=course_attrs.get("webwork_js_version", "2.17"),

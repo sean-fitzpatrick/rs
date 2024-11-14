@@ -17,12 +17,16 @@ import os
 import re
 import subprocess
 from pathlib import Path
+import logging
+from io import StringIO
+from shutil import copytree
 
 # Third Party
 # -----------
 import click
 import lxml.etree as ET
 from lxml import ElementInclude
+import pretext
 from pretext.project import Project
 
 # import xml.etree.ElementTree as ET
@@ -35,6 +39,7 @@ from sqlalchemy.sql import text
 from rsptx.logging import rslogger
 from runestone.server import get_dburl
 from rsptx.db.models import Library, LibraryValidator
+from rsptx.response_helpers.core import canonical_utcnow
 
 rslogger.setLevel("WARNING")
 
@@ -84,6 +89,12 @@ def _build_runestone_book(config, course, click=click):
             f"Error: {course} and {paver_vars['project_name']} do not match.  Your course name needs to match the project_name in pavement.py"
         )
         return False
+    if paver_vars["options"].build.template_args["basecourse"] != course:
+        click.echo(
+            f"Error: {course} and {paver_vars['options'].build.template_args['basecourse']} do not match.  Your course name needs to match the basecourse in pavement.py"
+        )
+        return False
+
     click.echo("Running runestone build --all")
     res = subprocess.run("runestone build --all", shell=True, capture_output=True)
     with open("cli.log", "wb") as olfile:
@@ -120,7 +131,7 @@ def _build_runestone_book(config, course, click=click):
 
 # Build a PreTeXt Book
 # --------------------
-def _build_ptx_book(config, gen, manifest, course, click=click):
+def _build_ptx_book(config, gen, manifest, course, click=click, target="runestone"):
     """
     Parameters:
     config : This originated as a config object from click -- a mock config will be provided by the AuthorServer
@@ -135,46 +146,49 @@ def _build_ptx_book(config, gen, manifest, course, click=click):
         return False
     else:
         click.echo("Checking files")
-        rs = check_project_ptx()
-        main_file = None
-        if rs:
-            main_file = rs.source_abspath()
-        else:
-            return False
-        # parse the main file, but this does not resolve any xi:includes
-        if main_file is None:
-            click.echo("Error: missing main file")
-            return False
-        tree = ET.parse(main_file)
-        # The next two lines are needed to parse the entire tree
-        root = tree.getroot()
-        ElementInclude.include(
-            root, base_url=str(main_file)
-        )  # include all xi:include parts
-
-        el = root.find("./docinfo/document-id")
-        if el is not None:
-            cname = el.text
-            if cname != course:
-                click.echo(
-                    f"Error course: {course} does not match document-id: {cname}"
-                )
-                return False
-        else:
-            click.echo("Missing document-id please add to <docinfo>")
+        # sets output_dir to `published/<course>`
+        # and {"host-platform": "runestone"} in stringparams
+        rs = check_project_ptx(course=course, target=target)
+        if not rs:
             return False
 
+        logger = logging.getLogger("ptxlogger")
+        logger.setLevel(logging.INFO)
+        string_io_handler = StringIOHandler()
+        logger.addHandler(string_io_handler)
+        click.echo("Building the book")
         rs.build()  # build the book, generating assets as needed
 
-        mpath = Path(os.getcwd(), "published", cname, manifest)
-        process_manifest(cname, mpath)
+        with open("cli.log", "a") as olfile:
+            olfile.write(string_io_handler.getvalue())
+
+        book_path = (
+            Path(os.environ.get("BOOK_PATH"))
+            / rs.output_dir
+            / "published"
+            / rs.output_dir
+        )
+
+        click.echo(f"Book will be deployed to {book_path}")
+        if rs.output_dir_abspath() != book_path:
+            res = copytree(rs.output_dir_abspath(), book_path, dirs_exist_ok=True)
+            if not res:
+                click.echo("Error copying files to published")
+                return False
+        else:
+            click.echo("No need to copy files to published")
+        click.echo("Book deployed successfully")
+        mpath = rs.output_dir_abspath() / manifest
+        process_manifest(course, mpath)
         # Fetch and copy the runestone components release as advertised by the manifest
         # - Use wget to get all the js files and put them in _static
-        click.echo("populating with the latest runestone files")
-        populate_static(config, mpath, course)
+        # Beginning with 2.6.1 PreTeXt populates the _static folder with the latest
+        if pretext.VERSION < "2.6.1":
+            click.echo("populating with the latest runestone files")
+            populate_static(config, mpath, course)
         # update the library page
-        click.echo("updating library...")
-        main_page = find_real_url(cname)
+        click.echo("updating library metadata...")
+        main_page = find_real_url(course)
         update_library(config, mpath, course, main_page=main_page, build_system="PTX")
         return True
 
@@ -201,39 +215,69 @@ def process_manifest(cname, mpath, click=click):
     return True
 
 
-def check_project_ptx(click=click):
+def check_project_ptx(click=click, course=None, target="runestone"):
     """
     Verify that the PreTeXt project is set up for a Runestone build
 
-    Returns: Name of the main project file.
+    Returns: Runestone target from PreTeXt project
 
-    1. Is there a runestone target in project.ptx?
-    2. Is the output dir set to published/basecourse
-    3. Is the top level source file set properly
-    4. TODO: Is the publisher file set (and present)
+    1. Ensure there is a runestone target in project.ptx
+    2. Set project output to published directory
+    3. Ensure the top level source file exists
+    4. Ensure the publisher file exists
+    5. Ensure the document-id exists
+    6. Set target output to document-id
 
     """
     proj = Project.parse("project.ptx")
-    if proj.has_target("runestone") is False:
-        click.echo("No runestone target in project.ptx")
-        return False
-
-    rs = proj.get_target("runestone")
-    dest = None
-    if hasattr(rs, "output_dir"):
-        dest = rs.output_dir
-    else:
-        click.echo("No output_dir specified in runestone target")
-        return False
-    if dest is not None:
-        if "published" not in str(dest):
-            click.echo("destination for build must be in published/<document-id>")
+    target_name = target
+    if proj.has_target(target_name) is False:
+        if proj.has_target("web"):
+            target_name = "web"
+        elif proj.has_target("html"):
+            target_name = "html"
+        else:
+            click.echo("No runestone suitable targets in project.ptx")
             return False
-    if hasattr(rs, "source") is False:
-        click.echo("No source file specified in runestone target")
+        click.echo(
+            f"No runestone target in project.ptx, will adopt {target_name} target"
+        )
+
+    book_path = os.environ.get("BOOK_PATH", None)
+    if book_path is None:
+        click.echo("BOOK_PATH must be set in the environment")
         return False
 
-    return rs
+    tgt = proj.get_target(target_name)
+
+    rslogger.info(f"target name: {target_name}")
+    rslogger.info(f"target source: {tgt.source_abspath()}")
+    rslogger.info(f"target publication: {tgt.publication_abspath()}")
+    if not tgt.source_abspath().exists():
+        click.echo(f"Source file specified in {target_name} target does not exist")
+        return False
+    if not tgt.publication_abspath().exists():
+        click.echo(f"Publication file specified in {target_name} target does not exist")
+        return False
+
+    docid_list = tgt.source_element().xpath("/pretext/docinfo/document-id/text()")
+    if len(docid_list) < 1:
+        click.echo(
+            f"Source file specified in runestone {target_name} does not have a document-id"
+        )
+        docid = course
+    else:
+        docid = docid_list[0]
+
+    if course is not None and docid != course:
+        click.echo(f"Error course: {course} does not match document-id: {docid}")
+        return False
+
+    tgt.output_dir = Path(docid)
+
+    tgt.stringparams.update({"host-platform": "runestone"})
+
+    return tgt
 
 
 def extract_docinfo(tree, string, attr=None, click=click):
@@ -318,7 +362,7 @@ def update_library(
         click.echo("Missing library table?  You may need to run an alembic migration.")
         return False
     # using the Model rather than raw sql ensures that everything is properly escaped
-    build_time = datetime.datetime.utcnow()
+    build_time = canonical_utcnow()
     click.echo(f"BUILD time is {build_time}")
     if res.rowcount == 0:
         new_lib = LibraryValidator(
@@ -748,3 +792,32 @@ def manifest_data_to_db(course_name, manifest_path):
     )
     sess.execute(ins)
     sess.commit()
+
+
+class StringIOHandler(logging.Handler):
+    """
+    A custom logging handler that captures log entries in a StringIO buffer.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stream = StringIO()
+
+    def emit(self, record):
+        """
+        Emit a record by writing to the StringIO buffer.
+        """
+        msg = self.format(record)
+        self.stream.write(msg + "\n")
+
+    def getvalue(self):
+        """
+        Return the contents of the StringIO buffer as a string.
+        """
+        return self.stream.getvalue()
+
+    def flush(self):
+        """
+        Flush the StringIO buffer.
+        """
+        self.stream.flush()

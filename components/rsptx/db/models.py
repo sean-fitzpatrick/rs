@@ -339,6 +339,11 @@ class Code(Base, IdMixin):
     language = Column(Text, nullable=False)
     emessage = Column(Text, nullable=True)
     comment = Column(Text)
+    edit_distance = Column(Integer)
+    cps = Column(Float())
+
+
+CodeValidator = sqlalchemy_to_pydantic(Code)
 
 
 # Used for datafiles and storing questions and their suffix separately.
@@ -355,7 +360,7 @@ class SourceCode(Base, IdMixin):
     suffix_code = Column(Text)
 
 
-CodeValidator = sqlalchemy_to_pydantic(Code)
+SourceCodeValidator = sqlalchemy_to_pydantic(SourceCode)
 
 
 # Courses
@@ -383,6 +388,7 @@ class Courses(Base, IdMixin):
     # should be served by the new bookserver
     new_server = Column(Web2PyBoolean, default=True)
     is_supporter = Column(Web2PyBoolean)
+    state = Column(String(128))  # the US State in which the course is taught
 
 
 CoursesValidator = sqlalchemy_to_pydantic(Courses)
@@ -522,6 +528,10 @@ class Question(Base, IdMixin):
     pct_on_first = Column(Float(53))
     mean_clicks_to_correct = Column(Float(53))
     question_json = Column(JSON)  # contains the JSON representation of the question
+    owner = Column(
+        String(512)
+    )  # username of the owner of the question (Author could be any name)
+    tags = Column(String(512))  # comma separated list of tags
 
 
 QuestionValidator = sqlalchemy_to_pydantic(Question)
@@ -594,6 +604,40 @@ class AssignmentQuestion(Base, IdMixin):
 
 AssignmentQuestionValidator = sqlalchemy_to_pydantic(AssignmentQuestion)
 
+#
+# DeadlineException
+# ----------------
+# This table is used to store exceptions to the deadline for an assignment or assignments
+# if the assignment is identified, then the exception is for that assignment only.  If it
+# is not specified then the exception is for that student for all assignments
+#
+
+
+class DeadlineException(Base, IdMixin):
+    __tablename__ = "deadline_exceptions"
+
+    course_id = Column(
+        ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    assignment_id = Column(
+        ForeignKey("assignments.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    sid = Column(
+        ForeignKey("auth_user.username", ondelete="CASCADE"), nullable=False, index=True
+    )
+    visible = Column(
+        Web2PyBoolean, nullable=True
+    )  # Override the assignment visibility for this student
+    duedate = Column(
+        Integer, nullable=True
+    )  # number of days to extend the assignment deadline
+    time_limit = Column(
+        Float, nullable=True
+    )  # multiplier for the time limit of a timed exam
+
+
+DeadlineExceptionValidator = sqlalchemy_to_pydantic(DeadlineException)
+
 
 # Grading
 # -------
@@ -664,7 +708,9 @@ class Chapter(Base, IdMixin):
     chapter_label = Column(String(512), nullable=False)
     chapter_num = Column(Integer, nullable=False)
 
+
 ChapterValidator = sqlalchemy_to_pydantic(Chapter)
+
 
 class SubChapter(Base, IdMixin):
     __tablename__ = "sub_chapters"
@@ -677,7 +723,9 @@ class SubChapter(Base, IdMixin):
     skipreading = Column(Web2PyBoolean, nullable=False)
     sub_chapter_num = Column(Integer, nullable=False)
 
+
 SubChapterValidator = sqlalchemy_to_pydantic(SubChapter)
+
 
 # Tracking User Progress
 # ----------------------
@@ -837,7 +885,9 @@ class Library(Base, IdMixin):
     basecourse = Column(
         String(512), ForeignKey("courses.course_name"), nullable=False, unique=True
     )
+    source_path = Column(String(512))  # path to the book source relative to BOOK_PATH/
     build_system = Column(String(20))
+    target = Column(String(128))  # the target for the PreTeXt build system
     for_classes = Column(Web2PyBoolean)
     is_visible = Column(Web2PyBoolean, default="T")
     github_url = Column(String(512))
@@ -845,6 +895,7 @@ class Library(Base, IdMixin):
     last_build = Column(DateTime)
     github_url = Column(String(255))
     social_url = Column(String(255))  # link to group for instructors
+    default_language = Column(String(20))
 
 
 LibraryValidator = sqlalchemy_to_pydantic(Library)
@@ -996,6 +1047,7 @@ class InvoiceRequest(Base, IdMixin):
     sid = Column(String(512))
     course_name = Column(String(512))
     email = Column(String(512))
+    amount = Column(Float)
     processed = Column(Web2PyBoolean)
 
 

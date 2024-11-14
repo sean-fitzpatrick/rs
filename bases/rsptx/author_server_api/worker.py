@@ -10,6 +10,7 @@
 #
 # Standard library
 # ----------------
+import datetime
 import os
 import sys
 import subprocess
@@ -78,6 +79,7 @@ celery.conf.broker_url = os.environ.get("CELERY_BROKER_URL", "redis://localhost:
 celery.conf.result_backend = os.environ.get(
     "CELERY_RESULT_BACKEND", "redis://localhost:6379"
 )
+celery.conf.broker_connection_retry_on_startup = True
 
 # new worker
 # 1. pull from github for the given repo
@@ -132,13 +134,13 @@ def clone_runestone_book(self, repo, bcname):
     return True
 
 
-def git_pull(self, book):
+def git_pull(self, book, source_path=None):
     res = subprocess.run(
         ["git", "reset", "--hard", "HEAD"], capture_output=True, cwd=f"/books/{book}"
     )
     if res.returncode != 0:
         outputlog = pathlib.Path("/books", book, "cli.log")
-        with open(outputlog, "w") as olfile:
+        with open(outputlog, "a") as olfile:
             olfile.write(res.stdout.decode("utf8"))
             olfile.write("\n====\n")
             olfile.write(res.stderr.decode("utf8"))
@@ -156,7 +158,7 @@ def git_pull(self, book):
     )
     if res.returncode != 0:
         outputlog = pathlib.Path("/books", book, "cli.log")
-        with open(outputlog, "w") as olfile:
+        with open(outputlog, "a") as olfile:
             olfile.write(res.stdout.decode("utf8"))
             olfile.write("\n====\n")
             olfile.write(res.stderr.decode("utf8"))
@@ -170,11 +172,13 @@ def git_pull(self, book):
         )
         raise Ignore()
     res = subprocess.run(
-        ["git", "pull", "--no-edit"], capture_output=True, cwd=f"/books/{book}"
+        ["git", "pull", "--rebase", "--no-edit", "--strategy-option=theirs"],
+        capture_output=True,
+        cwd=f"/books/{book}",
     )
     if res.returncode != 0:
         outputlog = pathlib.Path("/books", book, "cli.log")
-        with open(outputlog, "w") as olfile:
+        with open(outputlog, "a") as olfile:
             olfile.write(res.stdout.decode("utf8"))
             olfile.write("\n====\n")
             olfile.write(res.stderr.decode("utf8"))
@@ -214,13 +218,13 @@ def build_runestone_book(self, book):
     if res.returncode != 0:
         return False
     self.update_state(state="SUCCESS", meta={"current": "build complete"})
-    # update_last_build(book)
+    update_last_build(book)
     # todo: replace with update_library_book (see crud.py) -- but it is async
     return True
 
 
 @celery.task(bind=True, name="build_ptx_book")
-def build_ptx_book(self, book, generate=False):
+def build_ptx_book(self, book, generate=False, target="runestone", source_path=None):
     """
     Build a ptx book
 
@@ -228,16 +232,26 @@ def build_ptx_book(self, book, generate=False):
     :param book: book name
     :return: True if successful
     """
-    logger.debug(f"Building {book}")
+    if target is None:
+        target = "runestone"
+    logger.debug(f"Building {book} with target {target} at {source_path}")
+    if source_path:
+        base_path = pathlib.Path("/books", book, source_path)
+    else:
+        base_path = pathlib.Path("/books", book)
+    outputlog = pathlib.Path(base_path, "cli.log")
+    start_time = datetime.datetime.now()
+    with open(outputlog, "w") as olfile:
+        olfile.write(f"Starting build on {start_time}\n")
     self.update_state(state="CHECKING", meta={"current": "pull latest"})
     git_pull(self, book)
 
-    os.chdir(f"/books/{book}")
+    os.chdir(base_path)
     logger.debug(f"Before building myclick self = {self}")
     myclick = MyClick(self, "PTXBUILD")
     logger.debug("Starting build")
     res = _build_ptx_book(
-        config, generate, "runestone-manifest.xml", book, click=myclick
+        config, generate, "runestone-manifest.xml", book, click=myclick, target=target
     )
     if res:
         self.update_state(state="FINISHING", meta={"current": "updating permissions"})
@@ -257,7 +271,7 @@ def build_ptx_book(self, book, generate=False):
         return False
 
     self.update_state(state="SUCCESS", meta={"current": "build complete"})
-    # update_last_build(book)
+    update_last_build(book)
     return True
 
 
@@ -271,7 +285,7 @@ def deploy_book(self, book):
     numServers = int(os.environ["NUM_SERVERS"].strip())
 
     for i in range(1, numServers + 1):
-        command = f"rsync -e 'ssh -oStrictHostKeyChecking=no'  --exclude '__pycache__' -P -rzc /books/{book} {user}@server{i}:~/books --copy-links --delete"
+        command = f"rsync -e 'ssh -oStrictHostKeyChecking=no'  --exclude '__pycache__' -P -rzc /books/{book}/published/{book} {user}@server{i}:~/books/{book}/published --copy-links --delete"
         logger.debug(command)
         self.update_state(state="DEPLOYING", meta={"current": f"server{i}"})
         res = subprocess.run(
@@ -284,6 +298,7 @@ def deploy_book(self, book):
             logger.debug(res.stderr)
             return False
     self.update_state(state="SUCCESS", meta={"current": "deploy complete"})
+    update_last_sync(book)
     return True
 
 
@@ -361,3 +376,31 @@ def anonymize_data_dump(self, **kwargs):
     a.write_datashop(path=p)
     self.update_state(state="SUCCESS", meta={"current": "Ready for download"})
     return True
+
+
+def update_last_build(book):
+    """
+    Update the last build time for a book in the library table
+
+    :param book: book name
+    :return: None
+    """
+    # check to see if build_success exists and if not create it
+    if not os.path.exists(f"/books/{book}/build_success"):
+        pathlib.Path(f"/books/{book}/build_success").touch()
+    else:
+        os.utime(f"/books/{book}/build_success", None)
+
+
+def update_last_sync(book):
+    """
+    Update the last sync time for a book in the library table
+
+    :param book: book name
+    :return: None
+    """
+    # check to see if sync_success exists and if not create it
+    if not os.path.exists(f"/books/{book}/sync_success"):
+        pathlib.Path(f"/books/{book}/sync_success").touch()
+    else:
+        os.utime(f"/books/{book}/sync_success", None)

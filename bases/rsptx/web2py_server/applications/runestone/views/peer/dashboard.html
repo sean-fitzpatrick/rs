@@ -8,7 +8,6 @@
  </div>
 
 <h2>Peer Instruction: {{=assignment_name}}</h2>
-<div id="imessage"></div>
 
 <div class="row">
     <div class="col-md-6">
@@ -20,12 +19,12 @@
             <input type="hidden" name="assignment_id" value="{{=assignment_id}}" />
             Group Size
             <select id="groupsize" name="groupsize">
-                <option value="2" 
+                <option value="2"
                 {{ if groupsize == "2": }}
                   selected
                 {{ pass }}
                 >2</option>
-                <option value="3" 
+                <option value="3"
                 {{ if groupsize == "3": }}
                   selected
                 {{ pass }}
@@ -50,19 +49,32 @@
             >
                 Stop Vote 1
             </button>
-            <button
-                type="button"
-                id="makep"
-                class="btn btn-info"
-                onclick="makePartners(event)"
-            >
-                Enable Text Chat
-            </button>
+            <div id="chat-modality">
+                <button
+                    type="button"
+                    id="facechat"
+                    class="btn btn-info"
+                    onclick="enableFaceChat(event)"
+                    disabled
+                >
+                Enable in-person Chat
+                </button>
+                <button
+                    type="button"
+                    id="makep"
+                    class="btn btn-info"
+                    onclick="makePartners(event)"
+                    disabled
+                >
+                    Enable Text Chat
+                </button>
+            </div>
             <button
                 type="button"
                 id="vote2"
                 class="btn btn-info"
                 onclick="startVote2(event)"
+                disabled
             >
                 Start Vote 2
             </button>
@@ -71,30 +83,46 @@
                 id="vote3"
                 class="btn btn-info"
                 onclick="warnAndStopVote(event)"
+                disabled
             >
                 Stop Vote 2
             </button>
+            <div>
+                <button
+                    type="submit"
+                    id="nextq"
+                    class="btn btn-info"
+                    name="next"
+                    value="Next"
+                >
+                    Next Question
+                </button>
+                <button
+                    type="submit"
+                    id="restart"
+                    class="btn btn-danger"
+                    name="next"
+                    value="Reset"
+                >
+                    Start Over
+                </button>
+            </div>
+            {{ if lti: }}
             <button
-                type="submit"
-                id="nextq"
+                type="button"
+                id="sendScores"
                 class="btn btn-info"
-                name="next"
-                value="Next"
-            >
-                Next Question
+                onclick="sendLtiScores(event)"
+                disabled
+                >
+            Send LTI Scores
             </button>
-            <button
-                type="submit"
-                id="restart"
-                class="btn btn-danger"
-                name="next"
-                value="Reset"
-            >
-                Start Over
-            </button>
+            {{ pass }}
         </form>
     </div>
 </div>
+
+<div id="imessage"></div>
 
 <div class="row">
     <div class="oneq col-md-6 runestone-sphinx">
@@ -183,8 +211,9 @@
             mcounterel = document.querySelector("#messcounter");
             mcounterel.innerHTML = `<p>Messages Sent ${spec.mess_count}</p>`;
         }
-
+        console.log(`startTime = ${startTime} startTime2 = ${startTime2} spec = ${JSON.stringify(spec, null, 2)}`)
         counterel.innerHTML = `<p>Vote ${v} Answers: ${spec.count}</p>`;
+        answerCount = spec.count;
     }
 </script>
 <script src="/runestone/static/js/peer.js?v={{=request.peer_mtime}}"></script>
@@ -199,6 +228,7 @@
     var startTime = new Date().toUTCString();
     var startTime2 = null;
     var mess_count = 0;
+    var answerCount = 0;
     var done = {{=is_last }}
     if (done) {
         document.getElementById("nextq").disabled = true;

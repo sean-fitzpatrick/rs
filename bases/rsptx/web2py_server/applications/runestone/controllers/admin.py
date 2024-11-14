@@ -10,6 +10,7 @@
 #
 # Standard library
 # ----------------
+import base64
 import csv
 import datetime
 import io
@@ -46,6 +47,7 @@ AUTOGRADE_POSSIBLE_VALUES = dict(
     dragndrop=["manual", "all_or_nothing", "pct_correct", "interact"],
     external=[],
     fillintheblank=ALL_AUTOGRADE_OPTIONS,
+    groupsub=[],
     khanex=ALL_AUTOGRADE_OPTIONS,
     hparsons=ALL_AUTOGRADE_OPTIONS,
     lp_build=ALL_AUTOGRADE_OPTIONS,
@@ -88,6 +90,7 @@ WHICH_TO_GRADE_POSSIBLE_VALUES = dict(
     dragndrop=ALL_WHICH_OPTIONS,
     external=[],
     fillintheblank=ALL_WHICH_OPTIONS,
+    groupsub=[],
     hparsons=ALL_WHICH_OPTIONS,
     khanex=ALL_WHICH_OPTIONS,
     lp_build=ALL_WHICH_OPTIONS,
@@ -696,6 +699,7 @@ def admin():
 
 # Called in admin.js from courseStudents to populate  the list of students
 # eBookConfig.getCourseStudentsURL
+# Deprecated -- use /ns/auth/course_students
 @auth.requires_login()
 def course_students():
     response.headers["content-type"] = "application/json"
@@ -982,8 +986,13 @@ def addinstructor():
     instructor = request.args(0)
     res = db(db.auth_user.id == instructor).select().first()
     if res:
-        db.course_instructor.insert(course=auth.user.course_id, instructor=instructor)
-        retval = "Success"
+        try:
+            db.course_instructor.insert(
+                course=auth.user.course_id, instructor=instructor
+            )
+            retval = "Success"
+        except:
+            retval = "Error:  Adding a duplicate instructor"
     else:
         retval = "Cannot add non-existent user as instructor"
         logger.error("Trying to add non-user {} as instructor".format(instructor))
@@ -1370,7 +1379,7 @@ def edit_question():
     subchapter = old_question.subchapter
 
     question = vars["questiontext"]
-    htmlsrc = vars["htmlsrc"]
+    htmlsrc = base64.b64decode(vars["htmlsrc"]).decode("utf-8")
     private = True if vars["isprivate"] == "true" else False
     print("PRIVATE = ", private)
 
@@ -1445,18 +1454,23 @@ def question_text():
         .base_course
     )
     query = db.questions.name == qname
+    is_private = False
+    q_text = None
     if constrainbc == "true":
         query = query & (db.questions.base_course == base_course)
     try:
-        q_text = db(query).select(db.questions.question).first().question
-    except Exception:
+        res = db(query).select(db.questions.question, db.questions.is_private).first()
+        q_text = res.question
+        is_private = res.is_private == True
+    except Exception as e:
         q_text = f"Error: Could not find source for {qname} in the database"
-
+        logger.error(f"Error finding source for {qname} in the database: {e}")
     if q_text == None:
         q_text = f"Error: Could not find source for {qname} in the database"
 
     logger.debug(q_text)
-    return json.dumps(q_text)
+    logger.debug(f"is_private = {is_private}")
+    return json.dumps({"question_text": q_text, "is_private": is_private})
 
 
 @auth.requires(
@@ -1509,7 +1523,7 @@ def createquestion():
     * assignmentid': assignmentid
     * points integer number of points
     * timed- is this part of a timed exam
-    * htmlsrc htmlsrc from the previewer
+    * htmlsrc htmlsrc from the previewer -- encoded as base64
     """
     row = (
         db(db.courses.id == auth.user.course_id)
@@ -1549,6 +1563,8 @@ def createquestion():
             logger.error(f"question mismatch for question type {question_type}")
 
     try:
+        # htmlsrc should be sent as base64 encoded to avoid XSS attacks
+        source = base64.b64decode(request.vars["htmlsrc"]).decode("utf-8")
         newqID = db.questions.insert(
             base_course=base_course,
             name=request.vars["name"].strip(),
@@ -1564,7 +1580,7 @@ def createquestion():
             practice=practice,
             from_source=False,
             topic=topic,
-            htmlsrc=request.vars["htmlsrc"],
+            htmlsrc=source,
         )
 
         if request.vars["template"] == "datafile":
@@ -2039,12 +2055,17 @@ def _add_q_meta_info(qrow):
     else:
         book = "🏫"
 
+    if qrow.questions.is_private == True:
+        private = "🔒"
+    else:
+        private = ""
+
     name = qrow.questions.name
 
-    res = """ <span style="color: green">[{} {} {}
+    res = """ <span style="color: green">[{} {} {} {}
         </span> <span style="color: mediumblue">({})</span>]
         <span>{}...</span>""".format(
-        book, qt, ag, name, qrow.questions.description
+        book, qt, ag, private, name, qrow.questions.description
     )
 
     return res
@@ -2796,20 +2817,29 @@ def enroll_students():
         student_reader = csv.reader(strfile)
         validfile = io.TextIOWrapper(students.file, encoding="utf-8-sig")
         validation_reader = csv.reader(validfile)
+    except UnicodeDecodeError:
+        session.flash = "Could not decode the CSV file. An Excel export is likely the cause (see the Instructor Guide)"
+        return redirect(URL("admin", "admin"))
     except Exception as e:
         session.flash = "please choose a CSV file with student data"
         logger.error(e)
         return redirect(URL("admin", "admin"))
     messages = []
     line = 0
-    for row in validation_reader:
-        line += 1
-        if len(row) == 6:
-            res = _validateUser(row[0], row[4], row[2], row[3], row[1], row[5], line)
-        else:
-            res = [f"Error on line {line} you should have 6 fields"]
-        if res:
-            messages.extend(res)
+    try:
+        for row in validation_reader:
+            line += 1
+            if len(row) == 6:
+                res = _validateUser(
+                    row[0], row[4], row[2], row[3], row[1], row[5], line
+                )
+            else:
+                res = [f"Error on line {line} you should have 6 fields"]
+            if res:
+                messages.extend(res)
+    except UnicodeDecodeError:
+        session.flash = "Error: bad CSV file. An Excel export is likely the cause (see the Instructor Guide)"
+        return redirect(URL("admin", "admin"))
 
     if messages:
         return dict(
@@ -3095,11 +3125,18 @@ def reset_exam():
     else:
         return json.dumps({"status": "Failed", "mess": "Unknown Student"})
 
+    num_update = db(
+        (db.useinfo.sid == username)
+        & (db.useinfo.div_id == assignment_name)
+        & (db.useinfo.course_id == auth.user.course_name)
+        & (db.useinfo.event == "timedExam")
+    ).update(act="start_reset")
+
     # Remove records from the timed exam table
     num_del = db(
         (db.timed_exam.div_id == assignment_name) & (db.timed_exam.sid == username)
     ).delete()
-    if num_del == 0:
+    if num_del == 0 and num_update == 0:
         return json.dumps(
             {
                 "status": "Failed",
@@ -3134,7 +3171,7 @@ def reset_exam():
 def tickets():
     ticks = db.executesql(
         """
-    select * from traceback order by timestamp desc
+    select * from traceback order by timestamp desc limit 100
     """,
         as_dict=True,
     )

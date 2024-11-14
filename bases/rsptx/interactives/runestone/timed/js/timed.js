@@ -41,8 +41,8 @@ export default class Timed extends RunestoneBase {
         if ($(this.origElem).is("[data-no-feedback]")) {
             this.showFeedback = false;
         }
-        this.showResults = true;
-        if ($(this.origElem).is("[data-no-result]")) {
+        this.showResults = false;
+        if ($(this.origElem).is("[data-result]")) {
             this.showResults = false;
         }
         this.random = false;
@@ -501,9 +501,12 @@ export default class Timed extends RunestoneBase {
         this.finishButton.addEventListener(
             "click",
             async function () {
+                let skipped =
+                    this.renderedQuestionArray.filter((x) => !x.question.isAnswered).length;
+                let skipstr = skipped > 0 ? `You have skipped ${skipped} question(s).` : "";
                 if (
                     window.confirm(
-                        "Clicking OK means you are ready to submit your answers and are finished with this assessment."
+                        `${skipstr} Clicking OK means you are ready to submit your answers and are finished with this assessment.`
                     )
                 ) {
                     await this.finishAssessment();
@@ -542,8 +545,13 @@ export default class Timed extends RunestoneBase {
     }
     renderFeedbackContainer() {
         this.scoreDiv = document.createElement("P");
-        this.scoreDiv.id = this.divid + "results";
-        this.scoreDiv.style.display = "none";
+        if (this.taken) {
+            this.scoreDiv.innerHTML = "<h2>You have already taken this exam</h2>";
+            this.scoreDiv.style.display = "block";
+        } else {
+            this.scoreDiv.id = this.divid + "results";
+            this.scoreDiv.style.display = "none";
+        }
         this.containerDiv.appendChild(this.scoreDiv);
     }
 

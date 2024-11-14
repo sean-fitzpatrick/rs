@@ -80,13 +80,6 @@
     margin-bottom: 20px;
 }
 
-input[type="text"] {
-    width: 100%;
-    border: none;
-    background-color: transparent;
-    border-radius: 0px 20px 20px 0px;
-    border-color: rgb(14, 11, 11);
-}
 
 input {
     outline-style: none;
@@ -94,4 +87,32 @@ input {
 
 .library_entry {
     margin-bottom: 5pt;
+}
+
+
+
+.metaquestion {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+}
+
+.griditem {
+    display: flex;
+    flex-direction: column;
+    flex-basis: 100%;
+    flex: 1;
+}
+
+.questionblock {
+    background-color: #ddd;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    border-radius: 10px;
+}
+
+.overdue {
+    color: #ff0000;
+    font-size: larger;
 }

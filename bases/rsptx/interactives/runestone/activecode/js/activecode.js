@@ -86,6 +86,7 @@ export class ActiveCode extends RunestoneBase {
         this.outerDiv = null;
         this.partner = "";
         this.runCount = 0;
+        this.firstAfterRun = true;
         this.logResults = true;
         if (!eBookConfig.allow_pairs || $(orig).data("nopair")) {
             this.enablePartner = false;
@@ -244,10 +245,32 @@ export class ActiveCode extends RunestoneBase {
                         div_id: this.divid,
                     });
                 }
+                if (this.firstAfterRun) {
+                    this.firstAfterRun = false;
+                    this.startEditTimeStamp = new Date()
+                }
                 editor.acEditEvent = true;
             }.bind(this)
         ); // use bind to preserve *this* inside the on handler.
 
+        // disable copy/paste for timed exams
+        if (this.isTimed) {
+            editor.on("paste", function (cm, e) {
+                e.preventDefault();
+            });
+
+            document.addEventListener('copy', function (e) {
+                e.preventDefault();
+            });
+
+            document.addEventListener('cut', function (e) {
+                e.preventDefault();
+            });
+
+            document.addEventListener('paste', function (e) {
+                e.preventDefault();
+            });
+        }
         //Solving Keyboard Trap of ActiveCode: If user use tab for navigation outside of ActiveCode, then change tab behavior in ActiveCode to enable tab user to tab out of the textarea
         $(window).keydown(function (e) {
             var code = e.keyCode ? e.keyCode : e.which;
@@ -521,8 +544,8 @@ export class ActiveCode extends RunestoneBase {
                     if (!didAgree) {
                         didAgree = confirm(
                             "Pair Programming should only be used with the consent of your instructor." +
-                                "Your partner must be a registered member of the class and have agreed to pair with you." +
-                                "By clicking OK you certify that both of these conditions have been met."
+                            "Your partner must be a registered member of the class and have agreed to pair with you." +
+                            "By clicking OK you certify that both of these conditions have been met."
                         );
                         if (didAgree) {
                             localStorage.setItem("partnerAgree", "true");
@@ -565,13 +588,13 @@ export class ActiveCode extends RunestoneBase {
         $(butt).attr(
             "href",
             "http://" +
-                chatcodesServer +
-                "/new?" +
-                $.param({
-                    topic: window.location.host + "-" + this.divid,
-                    code: this.editor.getValue(),
-                    lang: "Python",
-                })
+            chatcodesServer +
+            "/new?" +
+            $.param({
+                topic: window.location.host + "-" + this.divid,
+                code: this.editor.getValue(),
+                lang: "Python",
+            })
         );
         this.chatButton = butt;
         chatBar.appendChild(butt);
@@ -782,6 +805,73 @@ export class ActiveCode extends RunestoneBase {
         $(this.loadButton).attr("title", "Login to load your code");
     }
 
+    computeChangesPerSecond() {
+        const currentCode = this.editor.getValue();
+        let lastCode;
+        if (this.historyScrubber) {
+            lastCode = this.history[this.historyScrubber.value - 1];
+        } else {
+            return 0
+        }
+
+        // Compute the edit distance between the current code and the last code
+        const editDistance = this.computeEditDistance();
+
+        // Compute the time difference between the current code and the last code
+        const currentTime = new Date().getTime();
+        //const lastTime = this.timestamps[this.historyScrubber.value];
+        const lastTime = this.startEditTimeStamp;
+        const timeDifference = (currentTime - lastTime) / 1000;
+        if (timeDifference > 60 * 60 * 10) {
+            return -1;
+        }
+
+        // Compute the changes per second
+        return editDistance / timeDifference;
+    }
+
+    computeEditDistance() {
+        const currentCode = this.editor.getValue();
+        let lastCode;
+        if (this.historyScrubber) {
+            lastCode = this.history[this.historyScrubber.value];
+        } else {
+            return 0
+        }
+
+        // Initialize a 2D array to store the edit distances
+        const dp = [];
+        for (let i = 0; i <= currentCode.length; i++) {
+            dp[i] = [];
+            for (let j = 0; j <= lastCode.length; j++) {
+                if (i === 0) {
+                    dp[i][j] = j;
+                } else if (j === 0) {
+                    dp[i][j] = i;
+                } else {
+                    dp[i][j] = 0;
+                }
+            }
+        }
+
+        // Compute the edit distances using dynamic programming
+        for (let i = 1; i <= currentCode.length; i++) {
+            for (let j = 1; j <= lastCode.length; j++) {
+                if (currentCode[i - 1] === lastCode[j - 1]) {
+                    dp[i][j] = dp[i - 1][j - 1];
+                } else {
+                    dp[i][j] = Math.min(
+                        dp[i - 1][j] + 1, // deletion
+                        dp[i][j - 1] + 1, // insertion
+                        dp[i - 1][j - 1] + 1 // substitution
+                    );
+                }
+            }
+        }
+
+        // Return the edit distance between the current code and the last code
+        return dp[currentCode.length][lastCode.length];
+    }
     downloadFile(lang) {
         var fnb = this.divid;
         var d = new Date();
@@ -951,7 +1041,7 @@ export class ActiveCode extends RunestoneBase {
         this.reformatButton.blur();
     }
 
-    toggleEditorVisibility() {}
+    toggleEditorVisibility() { }
 
     addErrorMessage(err) {
         // Add the error message
@@ -1050,9 +1140,9 @@ Yet another is that there is an internal error.  The internal error message is: 
             if (!(divid.endsWith(".js") || divid.endsWith(".py"))) {
                 $.ajax({
                     async: false,
-                    url: `/runestone/ajax/get_datafile?course_id=${eBookConfig.course}&acid=${divid}`,
+                    url: `/ns/logger/get_datafile?course_id=${eBookConfig.course}&acid=${divid}`,
                     success: function (data) {
-                        result = JSON.parse(data).data;
+                        result = data.detail;
                     },
                     error: function (err) {
                         result = null;
@@ -1153,7 +1243,7 @@ Yet another is that there is an internal error.  The internal error message is: 
             return window.componentMap[divid].editor.getValue();
         } else {
             let request = new Request(
-                `/runestone/ajax/get_datafile?course_id=${eBookConfig.course}&acid=${divid}`,
+                `/ns/logger/get_datafile?course_id=${eBookConfig.course}&acid=${divid}`,
                 {
                     method: "GET",
                     headers: this.jsonHeaders,
@@ -1161,7 +1251,7 @@ Yet another is that there is an internal error.  The internal error message is: 
             );
             let wresult = await fetch(request);
             let obj = await wresult.json();
-            return obj.data;
+            return obj.detail;
         }
     }
 
@@ -1201,7 +1291,7 @@ Yet another is that there is an internal error.  The internal error message is: 
         if (
             this.historyScrubber &&
             this.history[$(this.historyScrubber).slider("value")] !=
-                this.editor.getValue()
+            this.editor.getValue()
         ) {
             saveCode = "True";
             this.history.push(this.editor.getValue());
@@ -1249,6 +1339,10 @@ Yet another is that there is an internal error.  The internal error message is: 
         if (typeof sid !== "undefined") {
             data.sid = sid;
         }
+        let editDist = this.computeEditDistance();
+        let changesPerSecond = this.computeChangesPerSecond();
+        data.editDist = editDist;
+        data.changesPerSecond = changesPerSecond;
         await this.logRunEvent(data);
         // If unit tests were run there will be a unit_results
         if (this.unit_results) {
@@ -1467,6 +1561,7 @@ Yet another is that there is an internal error.  The internal error message is: 
             this.addErrorMessage(err);
         } finally {
             $(this.runButton).removeAttr("disabled");
+            this.firstAfterRun = true;
             if (typeof window.allVisualizers != "undefined") {
                 $.each(window.allVisualizers, function (i, e) {
                     e.redrawConnectors();

@@ -21,6 +21,7 @@ import altair as alt
 import pandas as pd
 import redis
 from dateutil.parser import parse
+from rs_grading import _try_to_send_lti_grade
 
 logger = logging.getLogger(settings.logger)
 logger.setLevel(settings.log_level)
@@ -84,7 +85,8 @@ def dashboard():
         act="start_question",
         timestamp=datetime.datetime.utcnow(),
     )
-
+    is_lti = db(db.course_lti_map.course_id == auth.user.course_id).count() > 0
+    print("is_lti", is_lti)
     r = redis.from_url(os.environ.get("REDIS_URI", "redis://redis:6379/0"))
     r.hset(f"{auth.user.course_name}_state", "mess_count", "0")
     mess = {
@@ -106,6 +108,7 @@ def dashboard():
         assignment_name=assignment.name,
         is_instructor=True,
         is_last=done,
+        lti=is_lti,
         **course_attrs,
     )
 
@@ -145,6 +148,7 @@ def _get_numbered_question(assignment_id, qnum):
     done = "false"
     if qnum > len(a_qs) - 1:
         qnum = len(a_qs) - 1
+    if qnum == len(a_qs) - 1:
         done = "true"
 
     current_question_id = a_qs[qnum].question_id
@@ -276,17 +280,21 @@ def chartdata():
 def num_answers():
     response.headers["content-type"] = "application/json"
     div_id = request.vars.div_id
+    if not request.vars.start_time:
+        return json.dumps({"count": 0, "mess_count": 0})
+
     acount = db(
         (db.mchoice_answers.div_id == div_id)
         & (db.mchoice_answers.course_name == auth.user.course_name)
         & (db.mchoice_answers.timestamp > parse(request.vars.start_time))
     ).count(distinct=db.mchoice_answers.sid)
-    r = redis.from_url(os.environ.get("REDIS_URI", "redis://redis:6379/0"))
-    res = r.hget(f"{auth.user.course_name}_state", "mess_count")
-    if res is not None:
-        mess_count = int(res)
-    else:
-        mess_count = 0
+
+    mess_count = db(
+        (db.useinfo.div_id == div_id)
+        & (db.useinfo.course_id == auth.user.course_name)
+        & (db.useinfo.event == "sendmessage")
+        & (db.useinfo.timestamp > parse(request.vars.start_time))
+    ).count()
 
     return json.dumps({"count": acount, "mess_count": mess_count})
 
@@ -398,6 +406,7 @@ def make_pairs():
         peeps.remove(auth.user.username)
     random.shuffle(peeps)
     group_list = []
+    done = len(peeps) == 0
     while not done:
         group = [peeps.pop()]
         for i in range(group_size - 1):
@@ -423,9 +432,9 @@ def make_pairs():
     for k, v in gdict.items():
         r.hset(f"partnerdb_{auth.user.course_name}", k, json.dumps(v))
     r.hset(f"{auth.user.course_name}_state", "mess_count", "0")
-    logger.debug(f"DONE makeing pairs for {auth.user.course_name} {gdict}")
+    logger.info(f"DONE makeing pairs for {auth.user.course_name} {gdict}")
     _broadcast_peer_answers(sid_ans)
-    logger.debug(f"DONE broadcasting pair information")
+    logger.info(f"DONE broadcasting pair information")
     return json.dumps("success")
 
 
@@ -470,7 +479,9 @@ def publish_message():
     response.headers["content-type"] = "application/json"
     r = redis.from_url(os.environ.get("REDIS_URI", "redis://redis:6379/0"))
     data = json.dumps(request.vars)
-    logger.debug(f"PM data = {data} {os.environ.get('REDIS_URI', 'redis://redis:6379/0')}")
+    logger.info(
+        f"PEERCOM data = {data} {os.environ.get('REDIS_URI', 'redis://redis:6379/0')}"
+    )
     r.publish("peermessages", data)
     res = r.hget(f"{auth.user.course_name}_state", "mess_count")
     if res is not None:
@@ -642,3 +653,17 @@ def _get_user_messages(user, div_id, course_name):
     mess += "</ul>"
 
     return mess, participants
+
+
+@auth.requires(
+    lambda: verifyInstructorStatus(auth.user.course_id, auth.user),
+    requires_login=True,
+)
+def send_lti_scores():
+    response.headers["content-type"] = "application/json"
+    assignment_id = request.vars.assignment_id
+    grades = db(db.grades.assignment == assignment_id).select()
+    for sid in grades:
+        _try_to_send_lti_grade(sid, assignment_id)
+
+    return json.dumps("success")

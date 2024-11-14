@@ -19,14 +19,19 @@ import hashlib
 import json
 from collections import namedtuple
 from typing import Dict, List, Optional, Tuple, Any
+import textwrap
 import traceback
+import pytz
 
 # Third-party imports
 # -------------------
+from asyncpg.exceptions import UniqueViolationError
 from fastapi.exceptions import HTTPException
 from pydal.validators import CRYPT
 from sqlalchemy import and_, distinct, func, update, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import select, text, delete
+from sqlalchemy.orm import aliased
 from starlette.requests import Request
 
 from rsptx.validation import schemas
@@ -36,7 +41,7 @@ from rsptx.validation import schemas
 from rsptx.logging import rslogger
 from rsptx.configuration import settings
 from .async_session import async_session
-from rsptx.response_helpers.core import http_422error_detail
+from rsptx.response_helpers.core import http_422error_detail, canonical_utcnow
 from rsptx.db.models import (
     Assignment,
     AssignmentValidator,
@@ -55,14 +60,19 @@ from rsptx.db.models import (
     CourseAttribute,
     CourseInstructor,
     CourseInstructorValidator,
+    CourseLtiMap,
     CoursePractice,
     Courses,
     CoursesValidator,
+    DeadlineException,
+    DeadlineExceptionValidator,
     EditorBasecourse,
     Grade,
     GradeValidator,
+    InvoiceRequest,
     Library,
     LibraryValidator,
+    LtiKey,
     Question,
     QuestionGrade,
     QuestionGradeValidator,
@@ -70,6 +80,8 @@ from rsptx.db.models import (
     runestone_component_dict,
     SelectedQuestion,
     SelectedQuestionValidator,
+    SourceCode,
+    SourceCodeValidator,
     SubChapter,
     SubChapterValidator,
     TimedExam,
@@ -158,6 +170,42 @@ async def count_useinfo_for(
         return res.all()
 
 
+async def get_peer_votes(div_id: str, course_name: str, voting_stage: int):
+    """
+    Provide the answers for a peer instruction multiple choice question.
+    What percent of students chose each option. This is used for the Review page of Peer Instruction questions.
+    """
+    # Subquery to get the latest vote for each student
+    subquery = (
+        select(func.max(Useinfo.id).label("max_id"))
+        .where(
+            (Useinfo.event == "mChoice")
+            & (Useinfo.course_id == course_name)
+            & (Useinfo.div_id == div_id)
+            & Useinfo.act.like(f"%vote{voting_stage}")
+        )
+        # Group by student ID to get each student's latest vote
+        .group_by(Useinfo.sid)
+        .subquery()
+    )
+
+    # Querying the Useinfo table for every student's latest votes using the subquery
+    query = (
+        select(Useinfo.act)
+        .join(subquery, Useinfo.id == subquery.c.max_id)
+        .order_by(Useinfo.id.desc())
+    )
+
+    async with async_session() as session:
+        result = await session.execute(query)
+        ans = result.scalars().all()
+
+    if ans:
+        return {"acts": ans}
+    else:
+        return {"acts": []}
+
+
 async def fetch_chapter_for_subchapter(subchapter: str, base_course: str) -> str:
     """
     Used for pretext books where the subchapter is unique across the book
@@ -237,6 +285,22 @@ async def create_question(question: QuestionValidator) -> QuestionValidator:
         new_question = Question(**question.dict())
         session.add(new_question)
     return QuestionValidator.from_orm(new_question)
+
+
+async def update_question(question: QuestionValidator) -> QuestionValidator:
+    """Update a row in the ``question`` table.
+
+    :param question: A question object
+    :type question: QuestionValidator
+    :return: A representation of the row updated.
+    :rtype: QuestionValidator
+    """
+    async with async_session.begin() as session:
+        stmt = (
+            update(Question).where(Question.id == question.id).values(**question.dict())
+        )
+        await session.execute(stmt)
+    return question
 
 
 async def fetch_poll_summary(div_id: str, course_name: str) -> List[tuple]:
@@ -450,6 +514,7 @@ async def create_course(course_info: CoursesValidator) -> None:
     new_course = Courses(**course_info.dict())
     async with async_session.begin() as session:
         session.add(new_course)
+    return new_course
 
 
 async def fetch_courses_for_user(
@@ -486,7 +551,7 @@ async def fetch_courses_for_user(
 #
 async def fetch_users_for_course(course_name: str) -> list[AuthUserValidator]:
     """
-    Retrieve a list of users enrolled in a given course (course_name)
+    Retrieve a list of users/students enrolled in a given course (course_name)
 
     :param course_name: str, the name of the course
     :return: list[AuthUserValidator], a list of AuthUserValidator objects representing the users
@@ -560,6 +625,22 @@ async def create_course_attribute(course_id: int, attr: str, value: str):
     new_attr = CourseAttribute(course_id=course_id, attr=attr, value=value)
     async with async_session.begin() as session:
         session.add(new_attr)
+
+
+async def copy_course_attributes(basecourse_id: int, new_course_id: int):
+    """
+    Copy all course attributes from a base course to a new course
+    """
+    query = select(CourseAttribute).where(CourseAttribute.course_id == basecourse_id)
+    async with async_session() as session:
+        res = await session.execute(query)
+        for row in res.scalars().fetchall():
+            print(row.attr, row.value)
+            new_attr = CourseAttribute(
+                course_id=new_course_id, attr=row.attr, value=row.value
+            )
+            session.add(new_attr)
+        await session.commit()
 
 
 async def get_course_origin(base_course):
@@ -796,6 +877,24 @@ async def create_instructor_course_entry(iid: int, cid: int) -> CourseInstructor
     return nci
 
 
+async def fetch_course_students(course_id: int) -> List[AuthUserValidator]:
+    """
+    Retrieve a list of students for the given course id (course_id)
+
+    :param course_id: int, the id of the course
+    :return: List[AuthUserValidator], a list of AuthUserValidator objects representing the students
+    """
+    query = (
+        select(AuthUser)
+        .join(UserCourse, UserCourse.user_id == AuthUser.id)
+        .where(UserCourse.course_id == course_id)
+    )
+    async with async_session() as session:
+        res = await session.execute(query)
+    student_list = [AuthUserValidator.from_orm(x) for x in res.scalars().fetchall()]
+    return student_list
+
+
 # Code
 # ----
 async def create_code_entry(data: CodeValidator) -> CodeValidator:
@@ -988,7 +1087,7 @@ async def update_sub_chapter_progress(user_data: schemas.LastPageData):
     ud["chapter_id"] = ud.pop("last_page_chapter")
     ud["sub_chapter_id"] = ud.pop("last_page_subchapter")
     if ud["status"] > -1:
-        ud["end_date"] = datetime.datetime.utcnow()
+        ud["end_date"] = canonical_utcnow()
 
     stmt = (
         update(UserSubChapterProgress)
@@ -1105,7 +1204,7 @@ async def create_user_sub_chapter_progress_entry(
         chapter_id=last_page_chapter,
         sub_chapter_id=last_page_subchapter,
         status=status,
-        start_date=datetime.datetime.utcnow(),
+        start_date=canonical_utcnow(),
         course_name=user.course_name,
     )
     async with async_session.begin() as session:
@@ -1151,7 +1250,7 @@ async def create_user_chapter_progress_entry(
         user_id=str(user.id),
         chapter_id=last_page_chapter,
         status=status,
-        start_date=datetime.datetime.utcnow(),
+        start_date=canonical_utcnow(),
     )
     async with async_session.begin() as session:
         session.add(new_ucp)
@@ -1242,6 +1341,7 @@ async def fetch_assignments(
     course_name: str,
     is_peer: Optional[bool] = False,
     is_visible: Optional[bool] = False,
+    fetch_all: Optional[bool] = False,
 ) -> List[AssignmentValidator]:
     """
     Fetch all Assignment objects for the given course name.
@@ -1252,10 +1352,20 @@ async def fetch_assignments(
     :param is_peer: bool, whether or not the assignment is a peer assignment
     :return: List[AssignmentValidator], a list of AssignmentValidator objects
     """
-
     if is_visible:
         vclause = Assignment.visible == is_visible
     else:
+        vclause = True
+
+    if is_peer:
+        pclause = Assignment.is_peer == True  # noqa: E712
+    else:
+        pclause = or_(
+            Assignment.is_peer == False, Assignment.is_peer == None  # noqa: E712, E711
+        )
+
+    if fetch_all:
+        pclause = True
         vclause = True
 
     query = (
@@ -1265,6 +1375,7 @@ async def fetch_assignments(
                 Assignment.course == Courses.id,
                 Courses.course_name == course_name,
                 vclause,
+                pclause,
             )
         )
         .order_by(Assignment.duedate.desc())
@@ -1440,11 +1551,18 @@ async def upsert_grade(grade: GradeValidator) -> GradeValidator:
     :return: GradeValidator, the GradeValidator object
     """
     new_grade = Grade(**grade.dict())
-
-    async with async_session.begin() as session:
-        # merge either inserts or updates the object
-        await session.merge(new_grade)
-    return GradeValidator.from_orm(new_grade)
+    success = True
+    try:
+        async with async_session.begin() as session:
+            # merge either inserts or updates the object
+            await session.merge(new_grade)
+    except (IntegrityError, UniqueViolationError) as e:
+        rslogger.error(f"IntegrityError: {e} id = {new_grade.id}")
+        success = False
+    if success:
+        return GradeValidator.from_orm(new_grade)
+    else:
+        return await fetch_grade(grade.auth_user, grade.assignment)
 
 
 async def fetch_question(
@@ -1565,6 +1683,7 @@ async def fetch_questions_by_search_criteria(
                 Question.question.regexp_match(criteria.source_regex, flags="i"),
                 Question.htmlsrc.regexp_match(criteria.source_regex, flags="i"),
                 Question.topic.regexp_match(criteria.source_regex, flags="i"),
+                Question.name.regexp_match(criteria.source_regex, flags="i"),
             )
         )
     if criteria.question_type:
@@ -1693,6 +1812,49 @@ async def fetch_question_grade(sid: str, course_name: str, qid: str):
         return QuestionGradeValidator.from_orm(res.scalars().one_or_none())
 
 
+async def create_question_grade_entry(
+    sid: str, course_name: str, qid: str, grade: int
+) -> QuestionGradeValidator:
+    """
+    Create a new QuestionGrade entry with the given sid, course_name, qid, and grade.
+    """
+    new_qg = QuestionGrade(
+        sid=sid,
+        course_name=course_name,
+        div_id=qid,
+        score=grade,
+        comment="autograded",
+    )
+    try:
+        async with async_session.begin() as session:
+            session.add(new_qg)
+    except (IntegrityError, UniqueViolationError) as e:
+        rslogger.error(f"IntegrityError: {e} id = {new_qg.id}")
+        return None
+    return QuestionGradeValidator.from_orm(new_qg)
+
+
+async def update_question_grade_entry(
+    sid: str, course_name: str, qid: str, grade: int, qge_id: Optional[int] = None
+) -> QuestionGradeValidator:
+    """
+    Create a new QuestionGrade entry with the given sid, course_name, qid, and grade.
+    """
+    new_qg = QuestionGrade(
+        sid=sid,
+        course_name=course_name,
+        div_id=qid,
+        score=grade,
+        comment="autograded",
+    )
+    if qge_id is not None:
+        new_qg.id = qge_id
+
+    async with async_session.begin() as session:
+        await session.merge(new_qg)
+    return QuestionGradeValidator.from_orm(new_qg)
+
+
 async def fetch_user_experiment(sid: str, ab_name: str) -> int:
     """
     When a question is part of an AB experiement (ab_name) get the experiment
@@ -1801,6 +1963,29 @@ async def fetch_timed_exam(
         return TimedExamValidator.from_orm(res.scalars().first())
 
 
+async def did_start_timed(sid: str, exam_id: str, course_name: str) -> bool:
+    """
+    Retrieve the start time for the given sid, exam_id, and course_name.
+
+    :param sid: str, the student id
+    :param exam_id: str, the id of the timed exam
+    :param course_name: str, the name of the course
+    :return: bool, whether the exam has started
+    """
+    start_query = select(Useinfo).where(
+        and_(
+            Useinfo.sid == sid,
+            Useinfo.div_id == exam_id,
+            Useinfo.course_id == course_name,
+            Useinfo.event == "timedExam",
+            Useinfo.act == "start",
+        )
+    )
+    async with async_session() as session:
+        start = await session.execute(start_query)
+        return start.scalars().first() is not None
+
+
 async def create_timed_exam_entry(
     sid: str, exam_id: str, course_name: str, start_time: datetime
 ) -> TimedExamValidator:
@@ -1877,11 +2062,11 @@ async def create_traceback(exc: Exception, request: Request, host: str):
         rslogger.debug(f"{dl[-2:]=}")
 
         new_entry = TraceBack(
-            traceback=tbtext + str(dl[-2:]),
-            timestamp=datetime.datetime.utcnow(),
-            err_message=str(exc),
-            path=request.url.path,
-            query_string=str(request.query_params),
+            traceback=tbtext + "\n".join(textwrap.wrap(str(dl[-2:]), 80)),
+            timestamp=canonical_utcnow(),
+            err_message=str(exc)[:512],
+            path=request.url.path[:1024],
+            query_string=str(request.query_params)[:512],
             hash=hashlib.md5(tbtext.encode("utf8")).hexdigest(),
             hostname=host,
         )
@@ -2355,3 +2540,396 @@ async def fetch_questions_for_chapter_subchapter(
             )
 
         return chaps
+
+
+async def fetch_answers(question_id: str, event: str, course_name: str, username: str):
+    """
+    Fetch all answers for a given question.
+
+    :param question_id: int, the id of the question
+    :return: List[AnswerValidator], a list of AnswerValidator objects
+    """
+
+    rcd = runestone_component_dict[EVENT2TABLE[event]]
+    tbl = rcd.model
+    query = select(tbl).where(
+        and_(
+            (tbl.div_id == question_id),
+            (tbl.course_name == course_name),
+            (tbl.sid == username),
+        )
+    )
+    async with async_session() as session:
+        res = await session.execute(query)
+        rslogger.debug(f"{res=}")
+        return [a for a in res.scalars()]
+
+
+async def is_assigned(
+    question_id: str,
+    course_id: int,
+    assignment_id: Optional[int] = None,
+    accommodation: Optional[DeadlineExceptionValidator] = None,
+) -> schemas.ScoringSpecification:
+    """
+    Check if a question is part of an assignment.
+    If the assignment is not visible, the question is not considered assigned.
+    If the assignment is not yet due -- no problem.
+    If the assignment is past due but the instructor has not enforced the due date -- no problem.
+    If the assignment is past due but the instructor has not enforced the due date, but HAS released the assignment -- then no longer assigned.
+
+    :param question_id: str, the name of the question
+    :param course_id: int, the id of the course
+    :return: ScoringSpecification, the scoring specification object
+    """
+    # select * from assignments join assignment_questions on assignment_questions.assignment_id = assignments.id join courses on courses.id = assignments.course where courses.course_name = 'overview'
+    clauses = [
+        (Question.name == question_id),
+        (AssignmentQuestion.question_id == Question.id),
+        (AssignmentQuestion.assignment_id == Assignment.id),
+        (Assignment.course == course_id),
+        (Assignment.is_timed == False),  # noqa: E712
+    ]
+    if assignment_id is not None:
+        clauses.append(Assignment.id == assignment_id)
+    query = (
+        select(Assignment, AssignmentQuestion, Question)
+        .where(and_(*clauses))
+        .order_by(Assignment.duedate.desc())
+    )
+    visible_exception = False
+    if accommodation and accommodation.visible:
+        visible_exception = True
+    async with async_session() as session:
+        res = await session.execute(query)
+        for row in res:
+            scoringSpec = schemas.ScoringSpecification(
+                assigned=False,
+                max_score=row.AssignmentQuestion.points,
+                score=0,
+                assignment_id=row.Assignment.id,
+                which_to_grade=row.AssignmentQuestion.which_to_grade,
+                how_to_score=row.AssignmentQuestion.autograde,
+                is_reading=row.AssignmentQuestion.reading_assignment,
+                username="",
+                comment="",
+                question_id=row.Question.id,
+            )
+            if accommodation and accommodation.duedate:
+                row.Assignment.duedate += datetime.timedelta(days=accommodation.duedate)
+            if datetime.datetime.now(datetime.UTC) <= row.Assignment.duedate.replace(
+                tzinfo=pytz.utc
+            ):
+                if row.Assignment.visible:  # todo update this when we have a visible by
+                    scoringSpec.assigned = True
+                    return scoringSpec
+            else:
+                if not row.Assignment.enforce_due and not row.Assignment.released:
+                    if row.Assignment.visible or visible_exception:
+                        scoringSpec.assigned = True
+                        return scoringSpec
+        return schemas.ScoringSpecification()
+
+
+async def fetch_reading_assignment_spec(
+    chapter: str,
+    subchapter: str,
+    course_id: int,
+) -> Optional[int]:
+    """
+    Check if a reading assignment is assigned for a given chapter and subchapter.
+
+    :param chapter: str, the label of the chapter
+    :param subchapter: str, the label of the subchapter
+    :param course_id: int, the id of the course
+    :return: The number of required activities or None
+    """
+    query = (
+        select(
+            AssignmentQuestion.activities_required,
+            AssignmentQuestion.question_id,
+            AssignmentQuestion.points,
+            AssignmentQuestion.assignment_id,
+            Question.name,
+        )
+        .select_from(Assignment)
+        .join(AssignmentQuestion, AssignmentQuestion.assignment_id == Assignment.id)
+        .join(Question, Question.id == AssignmentQuestion.question_id)
+        .where(
+            and_(
+                Assignment.course == course_id,
+                AssignmentQuestion.reading_assignment == True,  # noqa: E712
+                Question.chapter == chapter,
+                Question.subchapter == subchapter,
+                Assignment.visible == True,  # noqa: E712
+                or_(
+                    Assignment.duedate > canonical_utcnow(),
+                    Assignment.enforce_due == False,  # noqa: E712
+                ),
+            )
+        )
+    )
+    async with async_session() as session:
+        res = await session.execute(query)
+        return res.first()
+
+
+async def fetch_assignment_scores(
+    assignment_id: int, course_name: str, username: str
+) -> List[QuestionGradeValidator]:
+    """
+    Fetch all scores for a given assignment.
+
+    :param assignment_id: int, the id of the assignment
+    :param course_id: int, the id of the course
+    :param username: str, the username of the student
+    :return: List[ScoringSpecification], a list of ScoringSpecification objects
+    """
+    query = select(QuestionGrade).where(
+        and_(
+            (QuestionGrade.sid == username),
+            (QuestionGrade.div_id == Question.name),
+            (Question.id == AssignmentQuestion.question_id),
+            (AssignmentQuestion.assignment_id == assignment_id),
+            (QuestionGrade.course_name == course_name),
+        )
+    )
+
+    async with async_session() as session:
+        res = await session.execute(query)
+        rslogger.debug(f"{res=}")
+        return [QuestionGradeValidator.from_orm(q) for q in res.scalars()]
+
+
+async def did_send_messages(sid: str, div_id: str, course_name: str) -> bool:
+    """
+    Fetch all messages sent to a given student.
+
+    :param sid: str, the student id
+    :return: List[SentMessageValidator], a list of SentMessageValidator objects
+    """
+    query = select(Useinfo).where(
+        and_(
+            (Useinfo.sid == sid),
+            (Useinfo.div_id == div_id),
+            (Useinfo.course_id == course_name),
+        )
+    )
+    async with async_session() as session:
+        res = await session.execute(query)
+        if len(res.all()) > 0:
+            return True
+        else:
+            return False
+
+
+async def uses_lti(course_id: int) -> bool:
+    """
+    Check if a course uses LTI.
+
+    :param course_id: int, the id of the course
+    :return: bool, whether the course uses LTI
+    """
+    query = select(CourseLtiMap).where(CourseLtiMap.course_id == course_id)
+    async with async_session() as session:
+        res = await session.execute(query)
+        # check the number of rows in res
+
+        if len(res.all()) > 0:
+            return True
+
+    return False
+
+
+async def create_lti_course(course_id: int, lti_id: str) -> CourseLtiMap:
+    """
+    Create a new course in the LTI map.
+
+    :param course_id: int, the id of the course
+    :param lti_id: str, the LTI id of the course
+    :return: CourseLtiMap, the CourseLtiMap object
+    """
+    new_entry = CourseLtiMap(course_id=course_id, lti_id=lti_id)
+    async with async_session.begin() as session:
+        session.add(new_entry)
+
+    return new_entry
+
+
+async def delete_lti_course(course_id: int) -> bool:
+    """
+    Delete a course from the LTI map.
+
+    :param course_id: int, the id of the course
+    """
+    query = select(CourseLtiMap).where(CourseLtiMap.course_id == course_id)
+    async with async_session() as session:
+        res = await session.execute(query)
+    if res:
+        lti_key = res.scalars().first().lti_id
+    else:
+        return False
+
+    d_query1 = delete(CourseLtiMap).where(CourseLtiMap.course_id == course_id)
+    d_query2 = delete(LtiKey).where(LtiKey.id == lti_key)
+    async with async_session.begin() as session:
+        await session.execute(d_query1)
+        await session.execute(d_query2)
+
+    return True
+
+
+async def create_invoice_request(
+    user_id: str, course_name: str, amount: float, email: str
+) -> InvoiceRequest:
+    """
+    Create a new invoice request.
+
+    :param user_id: str, the id of the user
+    :param course_name: str, the name of the course
+    :param amount: float, the amount of the invoice
+    :param email: str, the email address of the user
+    :return: InvoiceRequest, the InvoiceRequest object
+    """
+    new_entry = InvoiceRequest(
+        sid=user_id,
+        course_name=course_name,
+        amount=amount,
+        email=email,
+        timestamp=canonical_utcnow(),
+        processed=False,
+    )
+    async with async_session.begin() as session:
+        session.add(new_entry)
+
+    return new_entry
+
+
+async def fetch_last_useinfo_peergroup(course_name: str) -> List[Useinfo]:
+    """
+    Fetch the last peergroup entry for each student in the given course.
+
+    :param course_name: str, the name of the course
+    :return: List[Useinfo], a list of Useinfo objects
+    """
+    async with async_session.begin() as session:
+        # Aliases for the Useinfo table
+        u1 = aliased(Useinfo)
+        u2 = aliased(Useinfo)
+
+        # Subquery to get the last entry for each student
+        subquery = (
+            select(u2.sid, func.max(u2.timestamp).label("last_entry"))
+            .filter(and_(u2.course_id == course_name, u2.event == "peergroup"))
+            .group_by(u2.sid)
+            .subquery()
+        )
+
+        # Main query to join the subquery and get the last entry details
+        query = (
+            select(u1)
+            .join(
+                subquery,
+                (u1.sid == subquery.c.sid) & (u1.timestamp == subquery.c.last_entry),
+            )
+            .filter(and_(u1.course_id == course_name, u1.event == "peergroup"))
+        )
+
+        # Execute the query
+        results = await session.execute(query)
+        return results.scalars().all()
+
+
+async def fetch_source_code(
+    acid: str, base_course: str, course_name: str
+) -> SourceCodeValidator:
+    """
+    Fetch the source code for a given acid.
+
+    :param acid: str, the acid of the source code
+    :return: SourceCodeValidator, the SourceCodeValidator object
+    """
+    query = select(SourceCode).where(
+        and_(
+            SourceCode.acid == acid,
+            or_(
+                SourceCode.course_id == base_course, SourceCode.course_id == course_name
+            ),
+        )
+    )
+    async with async_session() as session:
+        res = await session.execute(query)
+        return SourceCodeValidator.from_orm(res.scalars().first())
+
+
+async def fetch_deadline_exception(
+    course_id: int, username: str, assignment_id: int = None, fetch_all: bool = False
+) -> DeadlineExceptionValidator:
+    """
+    Fetch the deadline exception for a given username and assignment_id.
+
+    :param username: str, the username of the student
+    :param assignment_id: int, the id of the assignment
+    :return: DeadlineExceptionValidator, the DeadlineExceptionValidator object
+    """
+    query = (
+        select(DeadlineException)
+        .where(
+            and_(
+                DeadlineException.course_id == course_id,
+                DeadlineException.sid == username,
+            )
+        )
+        .order_by(DeadlineException.id.desc())
+    )
+    time_limit = None
+    deadline = None
+    async with async_session() as session:
+        res = await session.execute(query)
+        if fetch_all:
+            return [
+                DeadlineExceptionValidator.from_orm(row)
+                for row in res.scalars().fetchall()
+            ]
+        for row in res.scalars().fetchall():
+            rslogger.debug(f"{row=}, {assignment_id=}")
+            if assignment_id is not None:
+                if row.assignment_id == assignment_id:
+                    return DeadlineExceptionValidator.from_orm(row)
+            else:
+                if row.time_limit is not None and row.assignment_id is None:
+                    time_limit = row.time_limit
+                if row.duedate is not None and row.assignment_id is None:
+                    deadline = row.duedate
+        return DeadlineExceptionValidator(
+            course_id=course_id, sid=username, time_limit=time_limit, duedate=deadline
+        )
+
+
+async def create_deadline_exception(
+    course_id: int,
+    username: str,
+    time_limit: float,
+    deadline: int,
+    visible: bool,
+    assignment_id: int = None,
+) -> DeadlineExceptionValidator:
+    """
+    Create a new deadline exception for a given username and assignment_id.
+
+    :param username: str, the username of the student
+    :param assignment_id: int, the id of the assignment
+    :return: DeadlineExceptionValidator, the DeadlineExceptionValidator object
+    """
+    new_entry = DeadlineException(
+        course_id=course_id,
+        sid=username,
+        time_limit=time_limit,
+        duedate=deadline,
+        visible=visible,
+        assignment_id=assignment_id,
+    )
+    async with async_session.begin() as session:
+        session.add(new_entry)
+
+    return DeadlineExceptionValidator.from_orm(new_entry)

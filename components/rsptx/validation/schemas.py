@@ -32,7 +32,7 @@ from typing_extensions import Annotated
 # Local application imports
 # -------------------------
 # None.
-
+from rsptx.response_helpers.core import canonical_utcnow
 
 # Schema generation
 # =================
@@ -119,6 +119,7 @@ class LogItemIncoming(BaseModelNone):
     timestamp: Optional[datetime] = None
     chapter: Optional[str] = None
     subchapter: Optional[str] = None
+    assignment_id: Optional[int] = None
     # used by parsons
     source: Optional[str] = None
     # used by dnd
@@ -138,7 +139,7 @@ class AssessmentRequest(BaseModelNone):
     event: str
     sid: Optional[str] = None
     # See `Field with dynamic default value <https://pydantic-docs.helpmanual.io/usage/models/#required-optional-fields>`_.
-    deadline: datetime = Field(default_factory=datetime.utcnow)
+    deadline: datetime = Field(default_factory=canonical_utcnow)
     # TODO[pydantic]: The following keys were removed: `json_encoders`.
     # Check https://docs.pydantic.dev/dev-v2/migration/#changes-to-config for more information.
     model_config = ConfigDict(
@@ -152,7 +153,7 @@ class AssessmentRequest(BaseModelNone):
     def time_validate(cls, v):
         if v:
             return isoparse(v)
-        return isoparse(datetime.isoformat(datetime.utcnow()))
+        return isoparse(datetime.isoformat(canonical_utcnow()))
 
 
 class TimezoneRequest(BaseModelNone):
@@ -172,6 +173,8 @@ class LogRunIncoming(BaseModelNone):
     suffix: Optional[str] = None
     partner: Optional[str] = None
     sid: Optional[str] = None
+    editDist: Optional[int] = None
+    changesPerSecond: Optional[float] = None
 
 
 # Schemas for Completion Data
@@ -230,12 +233,19 @@ class AssignmentIncoming(BaseModel):
 
 
 class QuestionIncoming(BaseModel):
+    id: Optional[int] = None
     name: str
     source: str
     question_type: str
     htmlsrc: str
     autograde: Optional[str] = None
     question_json: Json
+    chapter: Optional[str] = None
+    author: Optional[str] = None
+    tags: Optional[str] = None
+    description: Optional[str] = None
+    difficulty: Optional[float] = None
+    topic: Optional[str] = None
 
 
 class AssignmentQuestionIncoming(BaseModel):
@@ -251,3 +261,23 @@ class SearchSpecification(BaseModel):
     author: Optional[str] = None
     tag_list: Optional[str] = None
     base_course: Optional[str] = None
+
+
+class ScoringSpecification(BaseModel):
+    assigned: bool = False
+    score: Optional[Union[int, float]] = None
+    max_score: Optional[int] = None
+    question_id: Optional[int] = None
+    assignment_id: Optional[int] = None
+    which_to_grade: Optional[str] = None
+    how_to_score: Optional[str] = None
+    username: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class ReadingAssignmentSpec(BaseModel):
+    activities_required: int
+    question_id: int
+    assignment_id: int
+    points: int
+    name: str

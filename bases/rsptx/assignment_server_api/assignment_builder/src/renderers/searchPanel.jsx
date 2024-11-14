@@ -9,6 +9,7 @@ import { DataTable } from 'primereact/datatable';
 import { Column } from 'primereact/column';
 import Preview from './preview';
 import PropTypes from 'prop-types';
+import toast from "react-hot-toast";
 import { setComponent } from '../state/componentEditor/editorSlice';
 import { Accordion, AccordionTab } from 'primereact/accordion';
 import { setACFields } from '../state/activecode/acSlice';
@@ -25,7 +26,7 @@ import {
     sumPoints,
 } from '../state/assignment/assignSlice';
 
-import { setQuestion } from '../state/interactive/interactiveSlice';
+import { setQuestion, setPreviewSrc } from '../state/interactive/interactiveSlice';
 import { setExerciseDefaults } from '../exUtils';
 import { OverlayPanel } from 'primereact/overlaypanel';
 import { EditorContainer } from './editorModeChooser';
@@ -36,12 +37,18 @@ import { EditorContainer } from './editorModeChooser';
  * @returns An accordian component with a preview of the exercise
  * @memberof AssignmentEditor
  */
-function PreviewTemplate(exercise) {
+export function PreviewTemplate(exercise) {
+    if (exercise.children) {
+        return null;
+    } else if (exercise.data) {
+        console.log(exercise.data)
+        exercise = exercise.data;
+    }
     return (
         <Accordion>
             <AccordionTab header="Preview">
                 <div className="ptx-runestone-container" style={{ "width": "600px" }}>
-                    <Preview code={exercise.htmlsrc} />
+                    <Preview code={exercise.htmlsrc} exercise={exercise} />
                 </div>
             </AccordionTab>
         </Accordion>
@@ -173,7 +180,8 @@ export function SearchResults() {
                 }}
             >
                 <Column selectionMode="multiple" style={{ width: '3em' }} />
-                <Column field="question_json" header="Edit" body={EditButton} sortable />
+                <Column field="question_json" header="Edit" body={EditButton} />
+                <Column field="name" header="Name" sortable />
                 <Column field="qnumber" header="Question" sortable />
                 <Column field="topic" header="Topic" sortable />
                 <Column field="htmlsrc" header="Preview" body={PreviewTemplate} style={{ maxWidth: '100rem' }} />
@@ -184,31 +192,33 @@ export function SearchResults() {
     );
 }
 
-    function EditButton(exercise) {
-        const op = useRef(null);
-        const dispatch = useDispatch();
+export function EditButton(exercise) {
+    const op = useRef(null);
+    const dispatch = useDispatch();
 
 
-        const toggleEditor = (e) => {
-            if ( !exercise.question_json) {
-                return null;
-            }
-            dispatch(setQuestion(exercise));
-            dispatch(setComponent(exercise.question_type))
-            if (exercise.question_type === "activecode") {
-                dispatch(setACFields(exercise.question_json));
-            } else if (exercise.question_type === "multiplechoice") {
-                dispatch(setMCFields(exercise.question_json));
-            }
-            op.current.toggle(e);
+    const toggleEditor = (e) => {
+        if (!exercise.question_json) {
+            toast("No question to edit", { icon: "🚫" })
+            return null;
         }
-
-        return (
-            <>
-                <Button icon="pi pi-cog" rounded text type="button" severity="secondary" onClick={toggleEditor} />
-                <OverlayPanel ref={op} dismissable={false} showCloseIcon>
-                    <EditorContainer exercise={exercise.question_type} />
-                </OverlayPanel>
-            </>
-        );
+        dispatch(setQuestion(exercise));
+        dispatch(setComponent(exercise.question_type))
+        dispatch(setPreviewSrc(exercise.htmlsrc));
+        if (exercise.question_type === "activecode") {
+            dispatch(setACFields(exercise.question_json));
+        } else if (exercise.question_type === "mchoice" || exercise.question_type === "multiplechoice") {
+            dispatch(setMCFields(exercise.question_json));
+        }
+        op.current.toggle(e);
     }
+
+    return (
+        <>
+            <Button icon="pi pi-pencil" rounded text type="button" severity="secondary" onClick={toggleEditor} />
+            <OverlayPanel ref={op} dismissable={false} showCloseIcon>
+                <EditorContainer exercise={exercise.question_type} editonly={true} />
+            </OverlayPanel>
+        </>
+    );
+}

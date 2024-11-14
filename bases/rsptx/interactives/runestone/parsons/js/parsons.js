@@ -49,7 +49,7 @@ import ParsonsBlock from "./parsonsBlock";
 
 /* =====================================================================
 ==== INITIALIZATION ====================================================
-===================================================================== */
+=====================================================================  */
 
 export default class Parsons extends RunestoneBase {
     constructor(opts) {
@@ -95,6 +95,7 @@ export default class Parsons extends RunestoneBase {
         if (typeof Prism !== "undefined") {
             Prism.highlightAllUnder(this.containerDiv);
         }
+        this.runnableDiv = null;
     }
     // Based on the data-fields in the original HTML, initialize options
     initializeOptions() {
@@ -153,12 +154,15 @@ export default class Parsons extends RunestoneBase {
             html: "prettyprint lang-html",
             c: "prettyprint lang-c",
             "c++": "prettyprint lang-cpp",
+            cpp: "prettyprint lang-cpp",
             ruby: "prettyprint lang-rb",
         }[language];
         if (prettifyLanguage == undefined) {
             prettifyLanguage = "";
         }
         options["prettifyLanguage"] = prettifyLanguage;
+        //runnable if the parent has a parsons-runnable attr
+        options["runnable"] = $(this.origElem).data("runnable");
         this.options = options;
     }
     // Based on what is specified in the original HTML, create the HTML view
@@ -335,7 +339,7 @@ export default class Parsons extends RunestoneBase {
                 options["displaymath"] = false;
             }
             textBlock = textBlock.replace(
-                /#(paired|distractor|tag:.*;.*;)/,
+                /\s*#(paired|distractor|tag:.*;.*;)\s*/g,
                 function (mystring, arg1) {
                     options[arg1] = true;
                     return "";
@@ -472,7 +476,7 @@ export default class Parsons extends RunestoneBase {
                 this.options.language == "natural" ||
                 this.options.language == "math"
             ) {
-                if (typeof runestoneMathready !== "undefined") {
+                if (typeof runestoneMathReady !== "undefined") {
                     await runestoneMathReady.then(
                         async () => await self.queueMathJax(item[0])
                     );
@@ -675,7 +679,13 @@ export default class Parsons extends RunestoneBase {
                 options
             );
             this.grade = this.grader.grade();
-            this.correct = this.grade;
+            if (this.grade == "correct") {
+                this.correct = true;
+            } else if (this.answerLines().length == 0) {
+                this.correct = null;
+            } else {
+                this.correct = false;
+            }
         }
         // Start the interface
         if (this.needsReinitialization !== true) {
@@ -1339,6 +1349,37 @@ export default class Parsons extends RunestoneBase {
                 } // end if can help
             } // end if not solved
         } // end outer if not solved
+
+        // if now or previous was correct, display runnable
+        if (this.hasSolved && this.options.runnable) {
+            if (!this.runnableDiv)
+                this.generateRunableVersion();
+            else //reveal "reset" runnable
+                this.runnableDiv.style.display = null;
+        }
+    }
+
+    // Conver the parsons-runnable into an activecode and display it
+    generateRunableVersion() {
+        this.runnableDiv = document.getElementById(this.divid + "-runnable");
+        this.runnableDiv.style.display = null;
+
+        let parsonsText = '';
+        for (let b of this.answerBlocks()) {
+            for (let l of b.lines) {
+                parsonsText += '    '.repeat(l.indent) + l.text + '\n';
+            }
+        }
+        parsonsText = parsonsText.slice(0, -1); // remove last newline
+
+        const textEl = this.runnableDiv.querySelector('textarea');
+        textEl.innerHTML = textEl.innerHTML.replace('==PARSONSCODE==', parsonsText);
+
+        // data-component="parsons-runnable" marks it as waiting to be turned into an activecode
+        const activeCodeToBe = this.runnableDiv.querySelector('[data-component="parsons-runnable"]');
+        activeCodeToBe.dataset.component = 'activecode';
+
+        window.runestoneComponents.renderOneComponent(this.runnableDiv);
     }
 
     renderFeedback() {
@@ -1357,13 +1398,12 @@ export default class Parsons extends RunestoneBase {
             answerArea.addClass("correct");
             feedbackArea.fadeIn(100);
             feedbackArea.attr("class", "alert alert-info");
-            if (this.checkCount > 1) {
-                feedbackArea.html(
-                    $.i18n("msg_parson_correct", this.checkCount)
-                );
-            } else {
-                feedbackArea.html($.i18n("msg_parson_correct_first_try"));
-            }
+            let message = this.checkCount > 1
+                ? $.i18n("msg_parson_correct", this.checkCount)
+                : $.i18n("msg_parson_correct_first_try");
+            if (this.options.runnable)
+                message += " " + $.i18n("msg_parson_correct_runnable");
+            feedbackArea.html(message);
         }
 
         if (this.grade === "incorrectTooShort") {
@@ -1571,9 +1611,9 @@ export default class Parsons extends RunestoneBase {
                     duration:
                         Math.sqrt(
                             Math.pow(endY - startY, 2) +
-                                Math.pow(endX - startX, 2)
+                            Math.pow(endX - startX, 2)
                         ) *
-                            4 +
+                        4 +
                         500,
                     start: function () {
                         that.moving = block;
@@ -2549,6 +2589,10 @@ export default class Parsons extends RunestoneBase {
         this.initializeAreas(this.blocksFromSource(), [], {});
         this.initializeInteractivity();
         document.body.scrollTop = scrollTop;
+        if (this.runnableDiv) {
+            // hide the rendered runnable - will get reused as is if rerevealed
+            this.runnableDiv.style.display = 'none';
+        }
     }
 }
 
