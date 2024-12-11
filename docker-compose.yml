@@ -251,9 +251,12 @@ services:
     ports:
       # ports are specified host:container
       - 80:80
-      #- 443:443
+      - 443:443
     volumes:
       - ${BOOK_PATH}:/usr/books
+      - ./nginx/conf/:/etc/nginx/conf.d:/ro
+      - ./certbot/conf/:/etc/letsencrypt/:ro
+      - ./certbot/www/:/var/www/certbot/:ro
     depends_on:
       runestone:
         condition: service_started
@@ -267,6 +270,13 @@ services:
       author:
         condition: service_started
         required: false
+
+  # add certbot container
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - ./certbot/www/:/var/www/certbot/:rw
+      - ./certbot/conf/:/etc/letsencrypt/:rw
 
   # this second nginx is designed to sit in front of python servers running on a host machine for a more convineient dev environment
   # it exposes the Runestone application on port 8080
