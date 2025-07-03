@@ -26,7 +26,7 @@ from pydantic import (
     Json,
 )
 from humps import camelize  # type: ignore
-from typing_extensions import Annotated
+from typing_extensions import Annotated, TypedDict
 
 # Local application imports
 # -------------------------
@@ -57,7 +57,7 @@ def sqlalchemy_to_pydantic(
     base: Type[BaseModel] = BaseModelNone,
     # SQLAlchemy fields to exclude from the resulting schema, provided as a sequence of field names. Ignore the id field by default.
     exclude: Container[str] = tuple(),
-):
+) -> Type[BaseModel]:
     # If provided an ORM model, get the underlying Table object.
     db_model = getattr(db_model, "__table__", db_model)
 
@@ -230,6 +230,10 @@ class AssignmentIncoming(BaseModel):
     points: int
     duedate: datetime
     kind: str
+    time_limit: Optional[int] = None
+    nofeedback: Optional[bool] = False
+    nopause: Optional[bool] = False
+    peer_async_visible: Optional[bool] = False
 
 
 class QuestionIncoming(BaseModel):
@@ -241,6 +245,7 @@ class QuestionIncoming(BaseModel):
     autograde: Optional[str] = None
     question_json: Json
     chapter: Optional[str] = None
+    subchapter: Optional[str] = None
     author: Optional[str] = None
     tags: Optional[str] = None
     description: Optional[str] = None
@@ -261,6 +266,31 @@ class SearchSpecification(BaseModel):
     author: Optional[str] = None
     tag_list: Optional[str] = None
     base_course: Optional[str] = None
+    assignment_id: Optional[int] = None
+
+
+class ExercisesSearchRequest(BaseModel):
+    """Request model for searching exercises with pagination and filtering"""
+    # Base course flag - when true, uses current course's base_course
+    use_base_course: bool = True
+    base_course: Optional[str] = None
+    
+    # Assignment ID to filter out already assigned exercises
+    assignment_id: Optional[int] = None
+
+    # Pagination
+    page: int = 0
+    limit: int = 20
+    
+    # Sorting
+    sorting: Dict[str, Any] = Field(
+        default_factory=lambda: {"field": "name", "order": 1}
+    )
+    
+    # Filters - consolidated JSON object for all filter types
+    # Supports array values for multi-selection and match modes with field_matchMode pattern
+    # Example: { "question_type": ["mchoice", "activecode"], "question_type_matchMode": "equals" }
+    filters: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ScoringSpecification(BaseModel):
@@ -287,3 +317,63 @@ class UpdateAssignmentExercisesPayload(BaseModel):
     assignmentId: int
     idsToAdd: Optional[List[int]] = None
     idsToRemove: Optional[List[int]] = None
+
+class AssignmentQuestionUpdateDict(TypedDict, total=False):
+    # AssignmentQuestion fields
+    id: int
+    assignment_id: int
+    question_id: int
+    points: int
+    timed: Optional[bool]
+    autograde: str
+    which_to_grade: str
+    reading_assignment: Optional[bool]
+    sorting_priority: int
+    activities_required: Optional[int]
+    
+    # Question fields
+    name: Optional[str]
+    source: Optional[str]
+    question_type: Optional[str]
+    htmlsrc: Optional[str]
+    question_json: Optional[Json]
+    chapter: Optional[str]
+    subchapter: Optional[str]
+    author: Optional[str]
+    topic: Optional[str]
+    feedback: Optional[str]
+    difficulty: Optional[float]
+    tags: Optional[str]
+    
+    # Owner field for permission checking
+    owner: Optional[str]
+
+class CreateExercisesPayload(BaseModel):
+    id: Optional[int] = None
+    name: str
+    source: str
+    question_type: str
+    htmlsrc: str
+    autograde: Optional[str] = None
+    question_json: Json
+    chapter: Optional[str] = None
+    subchapter: Optional[str] = None
+    author: Optional[str] = None
+    tags: Optional[str] = None
+    description: Optional[str] = None
+    difficulty: Optional[float] = None
+    topic: Optional[str] = None
+    points: Optional[int] = None
+    is_private: Optional[bool] = None
+
+    is_reading: bool
+    assignment_id: int
+
+class ValidateQuestionNameRequest(BaseModel):
+    name: str
+
+class CopyQuestionRequest(BaseModel):
+    original_question_id: int
+    new_name: str
+    assignment_id: Optional[int] = None
+    copy_to_assignment: bool = False

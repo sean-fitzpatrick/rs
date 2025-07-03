@@ -1,8 +1,27 @@
+import csv
+import datetime
+import json
 import pathlib
 import pandas as pd
+import io
 
-from fastapi import APIRouter, HTTPException, Depends, Request, status, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from .assignment_summary import create_assignment_summary
+
+from fastapi import (
+    APIRouter,
+    Cookie,
+    HTTPException,
+    Depends,
+    Request,
+    status,
+    Form,
+)
+from fastapi.responses import (
+    HTMLResponse,
+    RedirectResponse,
+    JSONResponse,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import create_engine
 from pydantic import BaseModel
@@ -16,14 +35,19 @@ from rsptx.db.crud import (
     delete_lti_course,
     fetch_assignment_questions,
     fetch_assignments,
+    fetch_problem_data,
     fetch_questions_by_search_criteria,
     fetch_question_count_per_subchapter,
     fetch_all_course_attributes,
     create_assignment_question,
     create_deadline_exception,
     create_question,
+    delete_course_instructor,
     fetch_course,
+    fetch_course_by_id,
+    fetch_instructor_courses,
     fetch_users_for_course,
+    fetch_subchapters,
     create_assignment,
     fetch_questions_for_chapter_subchapter,
     remove_assignment_questions,
@@ -35,7 +59,11 @@ from rsptx.db.crud import (
     update_question,
     fetch_one_assignment,
     get_peer_votes,
+    search_exercises,
+    create_api_token,
 )
+from rsptx.db.crud.question import validate_question_name_unique, copy_question
+from rsptx.db.crud.assignment import add_assignment_question, delete_assignment
 from rsptx.auth.session import auth_manager, is_instructor
 from rsptx.templates import template_folder
 from rsptx.configuration import settings
@@ -57,6 +85,11 @@ from rsptx.validation.schemas import (
     QuestionIncoming,
     SearchSpecification,
     UpdateAssignmentExercisesPayload,
+    AssignmentQuestionUpdateDict,
+    ExercisesSearchRequest,
+    CreateExercisesPayload,
+    ValidateQuestionNameRequest,
+    CopyQuestionRequest,
 )
 from rsptx.logging import rslogger
 from rsptx.analytics import log_this_function
@@ -371,17 +404,21 @@ async def new_assignment(
     request: Request,
     course=None,
 ):
+    if request_data.kind == "Timed":
+        request_data.is_timed = True
+    elif request_data.kind == "Peer":
+        request_data.is_peer = True
+        
     new_assignment = AssignmentValidator(
         **request_data.model_dump(),
         course=course.id,
-        visible=True,
+        visible=False,
         released=False,
         from_source=False,
         is_peer=False,
         current_index=0,
         enforce_due=False,
-        peer_async_visible=False,
-    )
+    )    
     try:
         res = await create_assignment(new_assignment)
         rslogger.debug(f"Created assignment: {res} {res.id}")
@@ -420,6 +457,36 @@ async def do_update_assignment(
     return make_json_response(status=status.HTTP_200_OK, detail={"status": "success"})
 
 
+@router.get("/sections_for_chapter/{chapter}")
+@instructor_role_required()
+@with_course()
+async def get_sections_for_chapter(
+    request: Request,
+    chapter: str,
+    user=Depends(auth_manager),
+    course=None,
+    response_class=JSONResponse,
+):
+    """
+    Get sections for a specific chapter.
+    Specifically the section title and section label
+    """
+    user_is_instructor = await is_instructor(request, user=user)
+    if not user_is_instructor:
+        return make_json_response(
+            status=status.HTTP_401_UNAUTHORIZED, detail="not an instructor"
+        )
+
+    sections = await fetch_subchapters(course.base_course, chapter)
+    # make a list of dictionaries with section title and label
+    sections = [
+        {"title": section.sub_chapter_name, "label": section.sub_chapter_label}
+        for section in sections
+        if section.sub_chapter_name and section.sub_chapter_label
+    ]
+    return make_json_response(status=status.HTTP_200_OK, detail={"sections": sections})
+
+
 @router.post("/new_question")
 async def new_question(
     request_data: QuestionIncoming,
@@ -439,11 +506,12 @@ async def new_question(
     if request_data.author is None:
         request_data.author = user.first_name + " " + user.last_name
 
+    if request_data.subchapter is None:
+        request_data.subchapter = "Exercises"
     # First create the question
     new_question = QuestionValidator(
         **request_data.model_dump(),
         base_course=course.base_course,
-        subchapter="Exercises",
         timestamp=canonical_utcnow(),
         is_private=False,
         practice=False,
@@ -481,13 +549,14 @@ async def do_update_question(
     rslogger.debug(f"Updating question: {request_data}")
     if request_data.author is None:
         request_data.author = user.first_name + " " + user.last_name
+    if request_data.subchapter is None:
+        request_data.subchapter = "Exercises"
     req = request_data.model_dump()
     req["question"] = req["source"]
     del req["source"]
     upd_question = QuestionValidator(
         **req,
         base_course=course.base_course,
-        subchapter="Exercises",
         timestamp=canonical_utcnow(),
         is_private=False,
         practice=False,
@@ -592,22 +661,32 @@ async def get_assignment_questions(
         aq["question_json"] = q["question_json"]
         aq["owner"] = q["owner"]
         aq["tags"] = q["tags"]
+        aq["topic"] = q["topic"]
+        aq["author"] = q["author"]
+        aq["difficulty"] = q["difficulty"]
+        aq["is_private"] = q["is_private"]
         qlist.append(aq)
 
     rslogger.debug(f"qlist: {qlist}")
 
     return make_json_response(status=status.HTTP_200_OK, detail={"exercises": qlist})
 
+
 @router.put("/assignment_question/batch")
 @instructor_role_required()
 @with_course()
 async def assignment_questions_batch(
     request: Request,
-    request_data: list[AssignmentQuestionValidator],
+    request_data: list[AssignmentQuestionUpdateDict],
     user=Depends(auth_manager),
     response_class=JSONResponse,
-    course = None,
+    course=None,
 ):
+    """
+    Update multiple assignment questions and their associated questions in batch.
+    The request_data is validated to ensure it contains required fields from both
+    AssignmentQuestionValidator and QuestionValidator.
+    """
     try:
         await update_multiple_assignment_questions(request_data)
     except Exception as e:
@@ -617,6 +696,7 @@ async def assignment_questions_batch(
             detail=f"Error updating assignment questions: {str(e)}",
         )
     return make_json_response(status=status.HTTP_200_OK, detail={"status": "success"})
+
 
 @router.put("/assignment_question")
 @instructor_role_required()
@@ -740,6 +820,47 @@ async def fetch_chooser_data(
     return make_json_response(status=status.HTTP_200_OK, detail={"questions": res})
 
 
+@router.post("/exercises/search")
+@instructor_role_required()
+@with_course()
+async def search_exercises_endpoint(
+    request: Request,
+    search_request: ExercisesSearchRequest,
+    user=Depends(auth_manager),
+    response_class=JSONResponse,
+    course=None,
+):
+    """
+    Smart search for exercises with pagination, filtering, and sorting.
+
+    - Uses consolidated filters object for all filter types including text search
+    - Supports base_course flag to automatically use the current course's base course
+    - Flexible sorting options
+    - Advanced pagination
+    """
+    # Set base course if flag is enabled
+    if search_request.use_base_course:
+        search_request.base_course = course.base_course
+
+    # Perform exercise search
+    result = await search_exercises(search_request)
+
+    # Convert timestamps to strings for JSON
+    exercises = []
+    for exercise in result["exercises"]:
+        exercise_dict = exercise.model_dump()
+        if hasattr(exercise, "timestamp") and exercise.timestamp:
+            exercise_dict["timestamp"] = exercise.timestamp.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        exercises.append(exercise_dict)
+
+    return make_json_response(
+        status=status.HTTP_200_OK,
+        detail={"exercises": exercises, "pagination": result["pagination"]},
+    )
+
+
 @router.post("/search_questions")
 async def search_questions(
     request: Request,
@@ -756,11 +877,6 @@ async def search_questions(
             status=status.HTTP_401_UNAUTHORIZED, detail="not an instructor"
         )
 
-    if request_data.source_regex:
-        words = request_data.source_regex.replace(",", " ")
-        words = request_data.source_regex.split()
-        request_data.source_regex = ".*(" + "|".join(words) + ").*"
-        request_data.author = ".*" + request_data.author + ".*"
     if request_data.base_course == "true":
         request_data.base_course = course.base_course
     else:
@@ -777,8 +893,12 @@ async def search_questions(
 
 
 @router.get("/builder")
+@router.get("/builder/{path:path}")
 async def get_builder(
-    request: Request, user=Depends(auth_manager), response_class=HTMLResponse
+    request: Request,
+    path: str = "",
+    user=Depends(auth_manager),
+    response_class=HTMLResponse,
 ):
     # get the course
     course = await fetch_course(user.course_name)
@@ -797,7 +917,6 @@ async def get_builder(
         "assignment/instructor/builder.html",
         {
             "course": course,
-            "user": user.username,
             "request": request,
             "is_instructor": user_is_instructor,
             "student_page": False,
@@ -820,35 +939,27 @@ async def get_builder(
 async def get_grader(
     request: Request, user=Depends(auth_manager), response_class=HTMLResponse
 ):
-    return await get_builder(request, user, response_class)
-
-
-@router.get("/builderV2")
-async def get_builderV2(
-    request: Request, user=Depends(auth_manager), response_class=HTMLResponse
-):
-    await log_this_function(user)
-    return await get_builder(request, user, response_class)
+    return await get_builder(request, "/grader", user, response_class)
 
 
 @router.get("/except")
 async def get_except(
     request: Request, user=Depends(auth_manager), response_class=HTMLResponse
 ):
-    return await get_builder(request, user, response_class)
+    return await get_builder(request, "/except", user, response_class)
 
 
 @router.get("/admin")
 async def get_admin(
     request: Request, user=Depends(auth_manager), response_class=HTMLResponse
 ):
-    return await get_builder(request, user, response_class)
+    return await get_builder(request, "/admin", user, response_class)
 
 
 @router.get("/cancel_lti")
 async def cancel_lti(request: Request, user=Depends(auth_manager)):
     """
-    Cancel the LTI session.
+    Cancel the LTI 1.1 session.
     """
     # get the course
     course = await fetch_course(user.course_name)
@@ -993,6 +1104,7 @@ async def save_exception(
     else:
         return make_json_response(status=status.HTTP_200_OK, detail={"success": True})
 
+
 @router.get("/which_to_grade_options")
 @instructor_role_required()
 async def get_which_to_grade_options(request: Request):
@@ -1006,14 +1118,350 @@ async def get_autograde_options(request: Request):
     options = [option.to_dict() for option in AutogradeOptions]
     return JSONResponse(content=options, status_code=status.HTTP_200_OK)
 
+
 @router.get("/language_options")
 @instructor_role_required()
 async def get_language_options(request: Request):
     options = [option.to_dict() for option in LanguageOptions]
     return JSONResponse(content=options, status_code=status.HTTP_200_OK)
 
+
 @router.get("/question_type_options")
 @instructor_role_required()
 async def get_language_options(request: Request):
     options = [option.to_dict() for option in QuestionType]
     return JSONResponse(content=options, status_code=status.HTTP_200_OK)
+
+
+@router.get("/download_assignment/{assignment_id}")
+@instructor_role_required()
+async def do_download_assignment(
+    assignment_id: int,
+    request: Request,
+    user=Depends(auth_manager),
+    RS_info: Optional[str] = Cookie(None),
+):
+    """
+    Download the specified assignment.
+    """
+
+    rslogger.debug(f"Downloading assignment: {assignment_id}")
+    course_name = user.course_name
+
+    course = await fetch_course(course_name)
+
+    assigns = await fetch_assignments(course.course_name)
+    current_assignment = None
+    for assign in assigns:
+        if assign.id == assignment_id:
+            current_assignment = assign
+            break
+    if current_assignment is None:
+        return make_json_response(
+            status=status.HTTP_404_NOT_FOUND,
+            detail=f"Assignment {assignment_id} not found",
+        )
+
+    res = await fetch_problem_data(assignment_id, course_name)
+    aqs = await fetch_assignment_questions(assignment_id)
+    if not aqs:
+        return make_json_response(
+            status=status.HTTP_404_NOT_FOUND,
+            detail=f"Assignment questions for {assignment_id} not found",
+        )
+
+    if RS_info:
+        rslogger.debug(f"RS_info Cookie {RS_info}")
+        # Note that to get to the value of the cookie you must use ``.value``
+        try:
+            parsed_js = json.loads(RS_info)
+        except Exception:
+            parsed_js = {}
+
+    tzoffset = parsed_js.get("tz_offset", None)
+    dd = datetime.timedelta(hours=int(tzoffset) if tzoffset is not None else 0)
+
+    csv_buffer = io.StringIO()
+    csv_writer = csv.writer(csv_buffer)
+    csv_writer.writerow(["Timestamp", "SID", "Div ID", "Event", "Act"])
+    for row in res:
+        csv_row = [row.ts + dd, row.sid, row.name, row.event, row.act]
+        csv_writer.writerow(csv_row)
+    csv_buffer.seek(0)
+
+    # send the csv file to the user
+    response = StreamingResponse(
+        csv_buffer,
+        media_type="text/csv",
+    )
+    response.headers["Content-Disposition"] = (
+        f"attachment; filename=assignment_{assignment_id}.csv"
+    )
+
+    return response
+
+
+@router.get("/assignment_summary/{assignment_id}")
+@instructor_role_required()
+async def do_assignment_summary(
+    assignment_id: int,
+    request: Request,
+    user=Depends(auth_manager),
+    response_class=HTMLResponse,
+):
+    """
+    Download the specified assignment.
+    """
+
+    course_name = user.course_name
+
+    course = await fetch_course(course_name)
+    context = {
+        "course": course,
+        "course_name": course.course_name,
+        "base_course": course.base_course,
+        "assignment_id": assignment_id,
+        "course_id": course.id,
+        "user": user,
+        "request": request,
+        "is_instructor": True,
+        "student_page": False,
+    }
+    templates = Jinja2Templates(directory=template_folder)
+    response = templates.TemplateResponse(
+        "assignment/instructor/assignment_summary.html", context
+    )
+
+    return response
+
+
+@router.get("/assignment_summary_data/{assignment_id}")
+@instructor_role_required()
+async def do_assignment_summary_data(
+    assignment_id: int,
+    request: Request,
+    user=Depends(auth_manager),
+    response_class=JSONResponse,
+):
+    course = await fetch_course(user.course_name)
+    if settings.server_config == "development":
+        dburl = settings.dev_dburl
+    elif settings.server_config == "production":
+        dburl = settings.dburl
+
+    summary_data, question_metadata = create_assignment_summary(
+        assignment_id, course, dburl
+    )
+    return make_json_response(
+        status=status.HTTP_200_OK,
+        detail={
+            "assignment_summary": summary_data,
+            "question_metadata": question_metadata,
+        },
+    )
+
+
+@router.post("/question")
+@instructor_role_required()
+async def question_creation(
+    request_data: CreateExercisesPayload, request: Request, user=Depends(auth_manager)
+):
+
+    if not request_data.author:
+        request_data.author = user.first_name + " " + user.last_name
+
+    course = await fetch_course(user.course_name)
+
+    # Exclude assignment_id and is_reading parameters
+    question_data = {
+        key: value
+        for key, value in request_data.model_dump().items()
+        if key not in ("assignment_id", "is_reading")
+    }
+
+    try:
+        question = await create_question(
+            QuestionValidator(
+                **question_data,
+                base_course=course.base_course,
+                timestamp=canonical_utcnow(),
+                practice=False,
+                from_source=False,
+                review_flag=False,
+                owner=user.username,
+            )
+        )
+
+        await add_assignment_question(data=request_data, question=question)
+
+    except Exception as e:
+        rslogger.error(f"Error creating question: {e}")
+        return make_json_response(
+            status=status.HTTP_400_BAD_REQUEST, detail=f"Error creating question: {e}"
+        )
+
+    return make_json_response(status=status.HTTP_201_CREATED)
+
+
+class AddTokenRequest(BaseModel):
+    provider: str
+    tokens: List[str]
+
+
+@router.post("/add_token")
+@instructor_role_required()
+@with_course()
+async def add_api_token(
+    request: Request,
+    request_data: AddTokenRequest,
+    course=None,
+):
+    """
+    Add one or more API tokens for a given provider to the instructor's course.
+
+    :param request_data: Contains provider name and list of tokens
+    :param course: Course object from decorator
+    :return: JSON response with success status
+    """
+    try:
+        created_tokens = []
+        for token in request_data.tokens:
+            if token.strip():  # Only process non-empty tokens
+                api_token = await create_api_token(
+                    course_id=course.id,
+                    provider=request_data.provider,
+                    token=token.strip(),
+                )
+                created_tokens.append(api_token.id)
+
+        return make_json_response(
+            status=status.HTTP_201_CREATED,
+            detail={
+                "status": "success",
+                "message": f"Added {len(created_tokens)} tokens for provider {request_data.provider}",
+                "token_ids": created_tokens,
+            },
+        )
+    except Exception as e:
+        rslogger.error(f"Error adding API tokens: {e}")
+        return make_json_response(
+            status=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error adding API tokens: {str(e)}",
+        )
+
+
+@router.get("/add_token")
+@instructor_role_required()
+@with_course()
+async def get_add_token_page(
+    request: Request,
+    user=Depends(auth_manager),
+    response_class=HTMLResponse,
+    course=None,
+):
+    """
+    Display the token management page for instructors.
+    """
+    templates = Jinja2Templates(directory=template_folder)
+    context = {
+        "course": course,
+        "user": user,
+        "request": request,
+        "is_instructor": True,
+        "student_page": False,
+    }
+
+    return templates.TemplateResponse("assignment/instructor/add_token.html", context)
+
+
+@router.delete("/assignments/{assignment_id}")
+@instructor_role_required()
+async def remove_assignment(
+    assignment_id: int,
+    request: Request
+):
+    rslogger.debug(f"Attempting to delete assignment {assignment_id}")
+    try:
+        await delete_assignment(
+            assignment_id=assignment_id
+        )
+        rslogger.debug(f"Successfully deleted assignment {assignment_id}")
+    except Exception as e:
+        rslogger.error(f"Error deleting assignment {assignment_id}: {e}")
+        return make_json_response(
+            status=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error deleting assignment: {e}"
+        )
+    return make_json_response(
+        status=status.HTTP_200_OK,
+        detail={"status": "success", "message": f"Assignment {assignment_id} deleted successfully"}
+    )
+
+
+@router.post("/validate_question_name")
+@instructor_role_required()
+@with_course()
+async def validate_question_name(
+    request: Request,
+    request_data: ValidateQuestionNameRequest,
+    course=None
+):
+    """
+    Validate if a question name is unique within the course's base course.
+    """
+    try:
+        # Use base_course from course context instead of request data
+        is_unique = await validate_question_name_unique(
+            name=request_data.name,
+            base_course=course.base_course
+        )
+        
+        return make_json_response(
+            status=status.HTTP_200_OK,
+            detail={"is_unique": is_unique}
+        )
+    except Exception as e:
+        rslogger.error(f"Error validating question name: {e}")
+        return make_json_response(
+            status=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error validating question name: {str(e)}"
+        )
+
+
+@router.post("/copy_question")
+@instructor_role_required()
+async def copy_question_endpoint(
+    request: Request,
+    request_data: CopyQuestionRequest,
+    user=Depends(auth_manager)
+):
+    """
+    Copy a question with a new name and owner.
+    Optionally copy it to an assignment as well.
+    """
+    try:
+        assignment_id = None
+        if request_data.copy_to_assignment and request_data.assignment_id:
+            assignment_id = request_data.assignment_id
+        
+        new_question = await copy_question(
+            original_question_id=request_data.original_question_id,
+            new_name=request_data.new_name,
+            new_owner=user.username,
+            assignment_id=assignment_id
+        )
+        
+        return make_json_response(
+            status=status.HTTP_201_CREATED,
+            detail={
+                "status": "success", 
+                "question_id": new_question.id,
+                "message": "Question copied successfully"
+            }
+        )
+    except Exception as e:
+        rslogger.error(f"Error copying question: {e}")
+        return make_json_response(
+            status=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error copying question: {str(e)}"
+        )

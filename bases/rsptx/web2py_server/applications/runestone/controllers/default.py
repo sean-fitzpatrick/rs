@@ -7,8 +7,10 @@ from six.moves.urllib.parse import unquote
 from six.moves.urllib.error import HTTPError
 import logging
 import subprocess
+import jwt
 
 from gluon.restricted import RestrictedError
+from gluon.http import HTTP
 from stripe_form import StripeForm
 
 logger = logging.getLogger(settings.logger)
@@ -179,6 +181,36 @@ def payment():
     return dict(html=html, payment_success=None)
 
 
+def w2py_login():
+    """
+    Allows external services (like fastapi based services) to login a user by username
+    expects a jwt encoded token in the request.vars["token"] field (encoded using the jwt_secret)
+    that should have a registration_id field with the registration_id to use for the web2py user
+    """
+    logger.debug("Generating web2py token")
+    token = request.vars["token"]
+    print(token)
+    try:
+        if not token:
+            err = "No token provided to w2py_login"
+            raise Exception(err)
+
+        decoded = jwt.decode(token, settings.jwt_secret, "HS256")
+        if not decoded:
+            err = "Invalid token provided to w2py_login"
+            raise Exception(err)
+
+        user = db(db.auth_user.registration_id == decoded["registration_id"]).select().first()
+        if not user:
+            err = "Unkonwn user in token provided to w2py_login"
+            raise Exception(err)
+
+        auth.login_user(user)
+        return "User logged in"
+    except Exception as e:
+        logger.error(f"Error in w2py_login: {e}")
+        raise HTTP(400, err)
+
 def index():
     #    print("REFERER = ", request.env.http_referer)
     if not auth.user:
@@ -325,12 +357,33 @@ def courses():
     res = db(db.user_courses.user_id == auth.user.id).select(
         db.user_courses.course_id, orderby=~db.user_courses.id
     )
+    instructor = db(db.course_instructor.instructor == auth.user.id).select()
+    iset = set()
+    for row in instructor:
+        iset.add(row.course)
+    logger.debug("Instructor set = %s", iset)
     classlist = []
+    bclist = []
     for row in res:
         classes = db(db.courses.id == row.course_id).select()
         for part in classes:
-            classlist.append(part.course_name)
-    return dict(courses=classlist)
+            if part.base_course == part.course_name:
+                bclist.append(
+                    {"course_name": part.course_name, "is_instructor": part.id in iset}
+                )
+            else:
+                classlist.append(
+                    {"course_name": part.course_name, "is_instructor": part.id in iset}
+                )
+    pagepath = request.vars.requested_path
+    if not pagepath:
+        pagepath = "index.html"
+    return dict(
+        courses=classlist,
+        bclist=bclist,
+        requested_course=request.vars.requested_course,
+        pagepath=pagepath,
+    )
 
 
 @auth.requires_login()

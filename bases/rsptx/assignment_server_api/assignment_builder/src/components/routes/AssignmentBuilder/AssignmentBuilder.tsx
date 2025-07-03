@@ -1,9 +1,10 @@
-import { AutoComplete } from "@components/ui/AutoComplete";
 import { Loader } from "@components/ui/Loader";
 import { assignmentActions } from "@store/assignment/assignment.logic";
 import {
   useCreateAssignmentMutation,
-  useGetAssignmentsQuery
+  useGetAssignmentsQuery,
+  useRemoveAssignmentMutation,
+  useUpdateAssignmentMutation
 } from "@store/assignment/assignment.logic.api";
 import {
   useGetAutoGradeOptionsQuery,
@@ -12,22 +13,32 @@ import {
   useGetWhichToGradeOptionsQuery
 } from "@store/dataset/dataset.logic.api";
 import { useGetAvailableReadingsQuery } from "@store/readings/readings.logic.api";
-import { InputSwitch } from "primereact/inputswitch";
-import { useEffect, useRef } from "react";
-import { Controller, useForm } from "react-hook-form";
+import sortBy from "lodash/sortBy";
+import { useEffect } from "react";
+import { toast } from "react-hot-toast";
 import { useDispatch } from "react-redux";
 
 import { useSelectedAssignment } from "@/hooks/useSelectedAssignment";
-import { Assignment } from "@/types/assignment";
+import { Assignment, CreateAssignmentPayload } from "@/types/assignment";
 
-import { AssignmentViewSelect } from "./components/AssignmentViewSelect";
+import { RoutingDebug } from "./components/RoutingDebug";
+import { AssignmentEdit } from "./components/edit/AssignmentEdit";
+import { AssignmentList } from "./components/list/AssignmentList";
+import { AssignmentWizard } from "./components/wizard/AssignmentWizard";
 import { defaultAssignment } from "./defaultAssignment";
+import { useAssignmentForm } from "./hooks/useAssignmentForm";
+import { useAssignmentRouting } from "./hooks/useAssignmentRouting";
+import { useAssignmentState } from "./hooks/useAssignmentState";
+import { useNameValidation } from "./hooks/useNameValidation";
 
 export const AssignmentBuilder = () => {
   const dispatch = useDispatch();
-  const { isLoading, isError, data: assignments } = useGetAssignmentsQuery();
+  const { isLoading, isError, data: assignments = [] } = useGetAssignmentsQuery();
   const [createAssignment] = useCreateAssignmentMutation();
-  const { selectedAssignment, updateAssignment } = useSelectedAssignment();
+  const [updateAssignment] = useUpdateAssignmentMutation();
+  const [removeAssignment] = useRemoveAssignmentMutation();
+
+  // Load all required data
 
   useGetAutoGradeOptionsQuery();
   useGetWhichToGradeOptionsQuery();
@@ -35,37 +46,96 @@ export const AssignmentBuilder = () => {
   useGetQuestionTypeOptionsQuery();
   useGetAvailableReadingsQuery({
     skipreading: false,
-    from_source_only: true,
+    from_source_only: false,
     pages_only: false
   });
 
-  const { control, watch, setValue, reset, getValues } = useForm<Assignment>({
-    defaultValues: selectedAssignment
+  // Routing management
+  const {
+    mode,
+    selectedAssignmentId,
+    wizardStep,
+    activeTab,
+    navigateToList,
+    navigateToCreate,
+    navigateToEdit,
+    updateWizardStep,
+    updateEditTab
+  } = useAssignmentRouting();
+
+  // Get selected assignment from routing
+  const { selectedAssignment, updateAssignment: updateSelectedAssignment } =
+    useSelectedAssignment();
+
+  // Update selected assignment ID in store when route changes
+  useEffect(() => {
+    if (selectedAssignmentId && selectedAssignmentId !== selectedAssignment?.id?.toString()) {
+      dispatch(assignmentActions.setSelectedAssignmentId(parseInt(selectedAssignmentId, 10)));
+    }
+  }, [selectedAssignmentId, selectedAssignment?.id, dispatch]);
+
+  // Custom hooks for state management
+  const { globalFilter, setGlobalFilter, isCollapsed, setIsCollapsed, handleTypeSelect } =
+    useAssignmentState();
+
+  // Form management
+  const { control, watch, setValue, reset, getValues, handleNameChange } = useAssignmentForm({
+    selectedAssignment: selectedAssignment || null,
+    mode,
+    onAssignmentUpdate: updateSelectedAssignment
   });
 
-  const isResetRef = useRef(false);
+  // Name validation
+  const { nameError, canProceed } = useNameValidation({
+    assignments,
+    watch
+  });
 
-  useEffect(() => {
-    if (selectedAssignment) {
-      isResetRef.current = true;
-      reset(selectedAssignment);
+  // Event handlers
+  const handleCreateNew = () => {
+    navigateToCreate("basic");
+    reset(defaultAssignment);
+  };
+
+  const handleEdit = (assignment: Assignment) => {
+    dispatch(assignmentActions.setSelectedAssignmentId(assignment.id));
+    navigateToEdit(assignment.id.toString(), "basic");
+  };
+
+  const handleVisibilityChange = async (assignment: Assignment, visible: boolean) => {
+    try {
+      await updateAssignment({
+        ...assignment,
+        visible
+      });
+      toast.success(`Assignment ${visible ? "visible" : "hidden"} for students`);
+    } catch (error) {
+      toast.error("Failed to update assignment visibility");
     }
-  }, [selectedAssignment, reset]);
+  };
 
-  useEffect(() => {
-    const { unsubscribe } = watch((formValues) => {
-      if (isResetRef.current) {
-        isResetRef.current = false;
+  const handleWizardComplete = async () => {
+    const formValues = getValues();
+    const payload: CreateAssignmentPayload = {
+      name: formValues.name,
+      description: formValues.description,
+      duedate: formValues.duedate,
+      points: 0,
+      kind: formValues.kind || "Regular",
+      time_limit: formValues.time_limit,
+      nofeedback: formValues.nofeedback,
+      nopause: formValues.nopause,
+      peer_async_visible: formValues.peer_async_visible,
+      visible: false
+    };
+    const response = await createAssignment(payload).unwrap();
+    const createdAssignmentId = response.detail.id;
 
-        return;
-      }
-
-      updateAssignment(formValues);
-    });
-
-    return unsubscribe;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    navigateToEdit(createdAssignmentId.toString());
+  };
+  const onRemove = async (assignment: Assignment) => {
+    removeAssignment(assignment);
+  };
 
   if (isLoading) {
     return (
@@ -75,63 +145,60 @@ export const AssignmentBuilder = () => {
     );
   }
 
-  if (isError || !assignments) {
-    return <div>Error!</div>;
+  if (isError) {
+    return <div>Error loading assignments!</div>;
   }
 
-  const createNewOption = "Create New";
-
-  const onAssignmentSelect = ({ value }: { value: string }) => {
-    const assignmentFromList = assignments.find((a) => a.name === value);
-
-    if (!assignmentFromList) {
-      createAssignment({ ...defaultAssignment, name: value });
-    } else {
-      dispatch(assignmentActions.setSelectedAssignmentId(assignmentFromList.id));
-    }
-  };
-
   return (
-    <div className="col-12" style={{ minWidth: "500px" }}>
-      <div className="card">
-        <h3>Assignment Builder</h3>
-        <div className="p-fluid formgrid grid">
-          <div className={`field col-12 md:col-${selectedAssignment ? 9 : 12}`}>
-            <span className="inline-block mb-2">Assignment Name</span>
-            <AutoComplete
-              className="field"
-              suggestions={assignments.map((assignment) => assignment.name)}
-              placeholder="Enter or select assignment name... start typing"
-              defaultOption={createNewOption}
-              onSelect={onAssignmentSelect}
-            />
-          </div>
-          {selectedAssignment && (
-            <>
-              <form style={{ display: "contents" }}>
-                <div style={{ paddingTop: "0.5rem" }} className="field col-12 md:col-3  flex">
-                  <div className="flex align-items-center flex-shrink-1 gap-1">
-                    <span className="label mb-0">Visible to Students</span>
-                    <Controller
-                      name="visible"
-                      control={control}
-                      render={({ field }) => (
-                        <InputSwitch
-                          className="flex-shrink-0"
-                          name="visible"
-                          checked={field.value}
-                          onChange={({ value }) => setValue("visible", value)}
-                        />
-                      )}
-                    />
-                  </div>
-                </div>
-              </form>
-              <AssignmentViewSelect control={control} setValue={setValue} getValues={getValues} />
-            </>
-          )}
-        </div>
-      </div>
+    <div className="root">
+      <RoutingDebug />
+      {mode === "list" && (
+        <AssignmentList
+          assignments={sortBy(assignments, (x) => x.id)}
+          globalFilter={globalFilter}
+          setGlobalFilter={setGlobalFilter}
+          onCreateNew={handleCreateNew}
+          onEdit={handleEdit}
+          onDuplicate={createAssignment}
+          onVisibilityChange={handleVisibilityChange}
+          onRemove={onRemove}
+        />
+      )}
+      {mode === "create" && (
+        <AssignmentWizard
+          control={control}
+          wizardStep={wizardStep}
+          nameError={nameError}
+          canProceed={canProceed}
+          onBack={() => {
+            if (wizardStep === "type") {
+              updateWizardStep("basic");
+            } else {
+              navigateToList();
+            }
+          }}
+          onNext={() => updateWizardStep("type")}
+          onComplete={handleWizardComplete}
+          onNameChange={handleNameChange}
+          onTypeSelect={(type) => handleTypeSelect(type, setValue)}
+          watch={watch}
+          setValue={setValue}
+        />
+      )}
+      {mode === "edit" && (
+        <AssignmentEdit
+          control={control}
+          selectedAssignment={selectedAssignment || null}
+          isCollapsed={isCollapsed}
+          activeTab={activeTab}
+          onCollapse={() => setIsCollapsed(!isCollapsed)}
+          onBack={() => navigateToList()}
+          onTabChange={updateEditTab}
+          onTypeSelect={(type) => handleTypeSelect(type, setValue)}
+          watch={watch}
+          setValue={setValue}
+        />
+      )}
     </div>
   );
 };

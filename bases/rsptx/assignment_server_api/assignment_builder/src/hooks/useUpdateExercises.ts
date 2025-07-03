@@ -13,13 +13,25 @@ export const useUpdateExercises = () => {
   const assignmentExercises = useSelector(assignmentExerciseSelectors.getAssignmentExercises);
 
   const handleChange = useCallback(
-    async (rowIndex: number, fieldName: DraggingExerciseColumns, value: string | number) => {
-      if (value === assignmentExercises[rowIndex][fieldName]) {
+    async (exerciseId: number, fieldName: DraggingExerciseColumns, value: string | number) => {
+      const exerciseToUpdate = assignmentExercises.find((ex) => ex.id === exerciseId);
+
+      if (!exerciseToUpdate) {
+        showToast({
+          severity: "error",
+          summary: "Error",
+          detail: "Exercise not found"
+        });
+        return;
+      }
+
+      if (value === exerciseToUpdate[fieldName]) {
         return;
       }
 
       const updatedExercise: Exercise = {
-        ...assignmentExercises[rowIndex],
+        ...exerciseToUpdate,
+        question_json: JSON.stringify(exerciseToUpdate.question_json),
         [fieldName]: value
       };
 

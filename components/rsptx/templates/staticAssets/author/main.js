@@ -97,22 +97,42 @@ async function addCourse() {
         return;
     }
     let repo = document.querySelector("#gitrepo");
-    if (!repo.value) {
-        alert("You must provide a document-id or base course");
-        return;
+    let repo_path = document.querySelector("#repo_path");
+    if (repo_path) {
+        repo_path = repo_path.value;
+        repo_path = repo_path.trim();
+        if (!repo.value && !repo_path) {
+            alert("You must provide either a github url or path to a local repo");
+            return;
+        }
+        if (repo.value && repo_path) {
+            alert(
+                "You must provide either a github url or path to a local repo, not both"
+            );
+            return;
+        }
+        if (repo_path && !repo_path.startsWith("/books/")) {
+            repo_path = "/books/" + repo_path;
+        }
     }
     let response = await fetch("/author/add_course", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({ bcname: bcname.value, github: repo.value }),
+        body: JSON.stringify({ bcname: bcname.value.trim(), github: repo.value, repo_path: repo_path })
     });
     if (response.ok) {
         let data = await response.json();
         if (data.detail == "success") {
         }
-        cloneTask();
+        if (repo.value) {
+            cloneTask();
+        } else if (repo_path) {
+            // redirect to the /author/editlibrary page
+            window.location.href = `/author/editlibrary/${bcname.value.trim()}`;
+
+        }
         // if clone fails we should remove from db? - maybe add a remove button?
         // check for repo to be present.
         let i = 0;
@@ -135,6 +155,7 @@ async function addCourse() {
         }, 1000);
     }
 }
+
 
 function deployTask(bcname) {
     fetch("/author/deployBook", {
@@ -330,6 +351,10 @@ function showLog(book) {
             let log = document.getElementById("lastlog");
             let div = document.getElementById("lastdiv");
             div.style.display = "block";
+            res.detail = res.detail.replace(/ /g, "&nbsp;");
+            res.detail = res.detail.replace(/</g, "&lt;");
+            res.detail = res.detail.replace(/>/g, "&gt;");
+            res.detail = res.detail.replace(/&/g, "&amp;");
             log.innerHTML = res.detail;
         })
         .catch((err) => console.log(err));
@@ -396,7 +421,9 @@ function getStatus(taskID) {
                     res.task_result.current = "Awaiting result status";
                 }
             }
-
+            res.task_result.current = res.task_result.current.replace(/</g, "&lt;");
+            res.task_result.current = res.task_result.current.replace(/>/g, "&gt;");
+            res.task_result.current = res.task_result.current.replace(/&/g, "&amp;");
             const html = `
       <tr>
         <td>${taskName}</td>

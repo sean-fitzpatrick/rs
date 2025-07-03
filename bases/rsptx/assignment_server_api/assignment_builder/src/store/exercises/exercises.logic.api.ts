@@ -3,14 +3,14 @@ import { assignmentExerciseApi } from "@store/assignmentExercise/assignmentExerc
 import { baseQuery } from "@store/baseQuery";
 import toast from "react-hot-toast";
 
-import { RootState } from "@/state/store";
 import { DetailResponse } from "@/types/api";
 import {
   CreateExercisesPayload,
-  Exercise,
-  SearchExercisePayload,
-  SearchExercisesResponse
+  ExercisesSearchRequest,
+  ExercisesSearchResponse
 } from "@/types/exercises";
+
+import { assignmentApi } from "../assignment/assignment.logic.api";
 
 export const exercisesApi = createApi({
   reducerPath: "exercisesAPI",
@@ -21,24 +21,14 @@ export const exercisesApi = createApi({
     createNewExercise: build.mutation<number, CreateExercisesPayload>({
       query: (body) => ({
         method: "POST",
-        url: "/assignment/instructor/new_question",
+        url: "/assignment/instructor/question",
         body
       }),
-      transformResponse: (response: DetailResponse<{ id: number }>) => {
-        return response.detail.id;
-      },
-      onQueryStarted: (_, { queryFulfilled, dispatch, getState }) => {
+      onQueryStarted: (_, { queryFulfilled, dispatch }) => {
         queryFulfilled
-          .then((response) => {
-            const state = getState() as RootState;
-
-            dispatch(
-              assignmentExerciseApi.endpoints.updateAssignmentExercises.initiate({
-                idsToAdd: [response.data],
-                isReading: false,
-                assignmentId: state.assignmentTemp.selectedAssignmentId!
-              })
-            );
+          .then(() => {
+            dispatch(assignmentExerciseApi.util.invalidateTags(["Exercises"]));
+            dispatch(assignmentApi.util.invalidateTags(["Assignment", "Assignments"]));
           })
           .catch(() => {
             toast("Error creating new exercise", {
@@ -47,14 +37,22 @@ export const exercisesApi = createApi({
           });
       }
     }),
-    searchExercises: build.query<Exercise[], SearchExercisePayload>({
-      query: (body) => ({
+    searchExercisesSmart: build.query<ExercisesSearchResponse, ExercisesSearchRequest>({
+      query: (params) => ({
         method: "POST",
-        url: "/assignment/instructor/search_questions",
-        body
+        url: "/assignment/instructor/exercises/search",
+        body: params
       }),
-      transformResponse: (response: DetailResponse<SearchExercisesResponse>) => {
-        return response.detail.questions;
+      transformResponse: (response: DetailResponse<ExercisesSearchResponse>) => {
+        return {
+          exercises: response.detail.exercises || [],
+          pagination: response.detail.pagination || {
+            total: 0,
+            page: 0,
+            limit: 20,
+            pages: 0
+          }
+        };
       },
       onQueryStarted: (_, { queryFulfilled }) => {
         queryFulfilled.catch(() => {
@@ -67,4 +65,4 @@ export const exercisesApi = createApi({
   })
 });
 
-export const { useCreateNewExerciseMutation, useSearchExercisesQuery } = exercisesApi;
+export const { useCreateNewExerciseMutation, useSearchExercisesSmartQuery } = exercisesApi;

@@ -24,6 +24,7 @@ import "codemirror/mode/octave/octave.js";
 import "./../css/activecode.less";
 import "codemirror/lib/codemirror.css";
 import "./../css/codemirror-dark.less";
+import "codemirror/addon/comment/comment.js";
 import "codemirror/addon/hint/show-hint.js";
 import "codemirror/addon/hint/show-hint.css";
 import "codemirror/addon/hint/sql-hint.js";
@@ -71,6 +72,7 @@ export class ActiveCode extends RunestoneBase {
         this.code = $(orig).text() || "\n\n\n\n\n";
         this.language = $(orig).data("lang");
         this.timelimit = $(orig).data("timelimit");
+        this.highlightLines = $(orig).data("highlight-lines");
         this.includes = $(orig).data("include");
         this.hidecode = $(orig).data("hidecode");
         this.chatcodes = $(orig).data("chatcodes");
@@ -152,8 +154,9 @@ export class ActiveCode extends RunestoneBase {
         if (visiblePrefixEnd > -1) {
             this.visiblePrefixEnd = visiblePrefixEnd;
             let markerLength = this.code[visiblePrefixEnd + 4] == "\n" ? 5 : 4;
+            this.visiblePrefix = this.code.substring(0, visiblePrefixEnd);
             this.code =
-                this.code.substring(0, visiblePrefixEnd) +
+                this.visiblePrefix +
                 this.code.substring(visiblePrefixEnd + markerLength);
         }
         // There may be both a visible and invisible (tests) suffix
@@ -176,12 +179,14 @@ export class ActiveCode extends RunestoneBase {
                 this.code[visibleSuffixStart + 4] == "\n" ? 5 : 4;
             this.visibleSuffixLength =
                 this.code.length - visibleSuffixStart - markerLength;
+            this.visibleSuffix = this.code.substring(visibleSuffixStart + markerLength);
             this.code =
                 this.code.substring(0, visibleSuffixStart) +
-                this.code.substring(visibleSuffixStart + markerLength);
+                this.visibleSuffix;
         }
+        let baseCode = this.trimLockedCode(this.code);
+        this.history = [baseCode];
 
-        this.history = [this.code];
         this.createEditor();
         this.createOutput();
         this.createControls();
@@ -197,9 +202,13 @@ export class ActiveCode extends RunestoneBase {
             this.codeCoachList.push(new PyflakesCoach());
         }
 
+        // Why is this necessary???
         setTimeout(
             function () {
                 this.editor.refresh();
+                // need to regen/highlight locked decoration
+                this.setLockedRegions();
+                this.setHighlightLines();
             }.bind(this),
             1000
         );
@@ -221,14 +230,13 @@ export class ActiveCode extends RunestoneBase {
         codeDiv.classList.add("ac_code_div");
         codeDiv.setAttribute("aria-label", "CodeMirror Editor");
         this.codeDiv = codeDiv;
-        this.outerDiv.lang = this.language;
         this.origElem.replaceWith(this.outerDiv);
         if (linkdiv.id !== this.divid) {
             // Don't want the 'extra' target if they match.
             this.outerDiv.appendChild(linkdiv);
         }
         this.outerDiv.appendChild(codeDiv);
-        var edmode = this.outerDiv.lang;
+        var edmode = this.language;
         if (edmode === "sql") {
             edmode = "text/x-sql";
         } else if (edmode === "java") {
@@ -247,7 +255,7 @@ export class ActiveCode extends RunestoneBase {
         let gutterList = [];
         if (this.visiblePrefixEnd || this.visibleSuffixLength) {
             gutterList = [
-                { className: "CodeMirror-lock-markers", style: "width: 6px" },
+                { className: "CodeMirror-lock-markers", style: "width: 16px" },
             ];
         }
         var editor = CodeMirror(codeDiv, {
@@ -258,6 +266,7 @@ export class ActiveCode extends RunestoneBase {
             matchBrackets: true,
             autoMatchParens: true,
             gutters: gutterList,
+            screenReaderLabel: "ActiveCode Editor",
             extraKeys: {
                 Tab: "indentMore",
                 "Shift-Tab": "indentLess",
@@ -265,76 +274,18 @@ export class ActiveCode extends RunestoneBase {
             },
         });
 
-        function makeLockMarker() {
-            // div with svg icon of a lock
-            var marker = document.createElement("div");
-            marker.innerHTML = `<div style="margin-top:0.2ex;"><svg xmlns="http://www.w3.org/2000/svg" height="16px" viewBox="0 -960 960 960" width="16px" fill="#5f6368"><path d="M263.72-96Q234-96 213-117.15T192-168v-384q0-29.7 21.15-50.85Q234.3-624 264-624h24v-96q0-79.68 56.23-135.84 56.22-56.16 136-56.16Q560-912 616-855.84q56 56.16 56 135.84v96h24q29.7 0 50.85 21.15Q768-581.7 768-552v384q0 29.7-21.16 50.85Q725.68-96 695.96-96H263.72Zm.28-72h432v-384H264v384Zm216.21-120Q510-288 531-309.21t21-51Q552-390 530.79-411t-51-21Q450-432 429-410.79t-21 51Q408-330 429.21-309t51 21ZM360-624h240v-96q0-50-35-85t-85-35q-50 0-85 35t-35 85v96Zm-96 456v-384 384Z"/></svg></div>`;
-            marker.setAttribute("title", "Locked");
-            return marker;
-        }
-
-        let setLockedRegions = () => {
-            if (this.visiblePrefixEnd) {
-                let lastLine = editor.posFromIndex(
-                    this.visiblePrefixEnd - 1
-                ).line;
-                for (let i = 0; i <= lastLine; i++) {
-                    editor.setGutterMarker(
-                        i,
-                        "CodeMirror-lock-markers",
-                        makeLockMarker()
-                    );
-                }
-                let endPos = editor.posFromIndex(this.visiblePrefixEnd);
-                console.log("endPos", endPos);
-                editor.markText(
-                    { line: 0, ch: 0 },
-                    { line: endPos.line, ch: endPos.ch },
-                    {
-                        readOnly: true,
-                        atomic: false,
-                        inclusiveLeft: true,
-                        inclusiveRight: false,
-                    }
-                );
-            }
-            if (this.visibleSuffixLength) {
-                let endIndex =
-                    editor.doc.getValue().length - this.visibleSuffixLength;
-                let endPos = editor.posFromIndex(endIndex);
-                let lastLine = editor.doc.lastLine();
-                for (let i = endPos.line; i <= lastLine; i++) {
-                    editor.setGutterMarker(
-                        i,
-                        "CodeMirror-lock-markers",
-                        makeLockMarker()
-                    );
-                }
-                // include preceeding newline
-                let endPos2 = editor.posFromIndex(endIndex - 1);
-                editor.markText(
-                    { line: endPos2.line, ch: endPos2.ch },
-                    { line: editor.doc.lastLine() + 1 },
-                    {
-                        readOnly: true,
-                        atomic: false,
-                        inclusiveLeft: false,
-                        inclusiveRight: true,
-                    }
-                );
-            }
-        };
-        setLockedRegions();
-
-        CodeMirror.on(editor, "change", (cm, obj) => {
-            // setValue indicates scrubber switched history, need to reset locked regions
-            if (obj.origin === "setValue") {
-                editor.doc.clearGutter("CodeMirror-lock-markers");
-                setLockedRegions();
-            }
+        // Handle hidden codemirror (in tab) coming into view
+        CodeMirror.on(editor, "refresh", (cm) => {
+            window.requestAnimationFrame(() => {
+                this.setLockedRegions();
+                this.setHighlightLines();
+                // make sure vscrollbar does not overlap the resize handle
+                editor.display.scrollbars.vert.style.bottom =  "16px";
+            });
         });
 
         // Make the editor resizable
+        let ac = this;
         $(editor.getWrapperElement()).resizable({
             resize: function () {
                 editor.setSize($(this).width(), $(this).height());
@@ -376,7 +327,11 @@ export class ActiveCode extends RunestoneBase {
                     this.firstAfterRun = false;
                     this.startEditTimeStamp = new Date();
                 }
-                editor.acEditEvent = true;
+                // try to make sure vscrollbar does not overlap the resize handle
+                // need to delay request to happen after codemirror has adjusted the same style
+                window.requestAnimationFrame(() => {
+                    this.editor.display.scrollbars.vert.style.bottom =  "16px";
+                });
             }.bind(this)
         ); // use bind to preserve *this* inside the on handler.
 
@@ -398,8 +353,10 @@ export class ActiveCode extends RunestoneBase {
                 e.preventDefault();
             });
         }
-        //Solving Keyboard Trap of ActiveCode: If user use tab for navigation outside of ActiveCode, then change tab behavior in ActiveCode to enable tab user to tab out of the textarea
+        // capture current this for use in event handler
+        let acElement = this;
         $(window).keydown(function (e) {
+            //Solving Keyboard Trap of ActiveCode: If user use tab for navigation outside of ActiveCode, then change tab behavior in ActiveCode to enable tab user to tab out of the textarea
             var code = e.keyCode ? e.keyCode : e.which;
             if (code == 9 && $("textarea:focus").length === 0) {
                 editor.setOption("extraKeys", {
@@ -415,12 +372,119 @@ export class ActiveCode extends RunestoneBase {
                     },
                 });
             }
+            if ((e.originalEvent.code == "KeyS") && e.originalEvent.ctrlKey) {
+                acElement.runButton.click();
+                e.preventDefault();
+            }
+            if ((e.originalEvent.code == "Slash") && e.originalEvent.ctrlKey) {
+                editor.toggleComment();
+                e.preventDefault();
+            }
         });
         this.editor = editor;
+
+        // try to make sure vscrollbar does not overlap the resize handle
+        // need to delay request to happen after codemirror has adjusted the same style
+        window.requestAnimationFrame(() => {
+            this.editor.display.scrollbars.vert.style.bottom =  "16px";
+        });
+
+        // lock down code prefix/suffix
+        this.setLockedRegions();
+
+        this.setHighlightLines();
+
         if (this.hidecode) {
             $(this.codeDiv).css("display", "none");
         }
     }
+
+    async setHighlightLines() {
+        if (this.highlightLines) {
+            if (typeof this.highlightLines === "number")
+                this.highlightLines = this.highlightLines.toString();
+
+            let highlightList = this.highlightLines.split(",");
+            let lines = this.containerDiv.querySelectorAll(".CodeMirror-code > div");
+            highlightList.forEach((line) => {
+                // addLineClass not used here for reason described in setLockedRegions
+                line = line.trim();
+                let lineNum = line.split("-");
+                if (lineNum.length > 1) {
+                    for (let i = parseInt(lineNum[0]); i <= parseInt(lineNum[1]); i++) {
+                        lines[i - 1].classList.add("CodeMirror__highlight-line");
+                    }
+                } else {
+                    lines[lineNum - 1].classList.add("CodeMirror__highlight-line");
+                }
+            });
+        }
+    }
+
+
+    async setLockedRegions() {
+        function decorateLines(start, end) {
+            let lines = this.containerDiv.querySelectorAll(".CodeMirror-code > div");
+            for (let i = start; i <= end; i++) {
+                // addLineClass looks like the way this "should" be done
+                // codemirror appears to remove the line and insert a modified one
+                // causing a lot of rerendering. Can slow page load down substantially
+                //this.editor.addLineClass(i, "behind", "CodeMirror__locked-line");
+                // So manually just go add a class after verifying component is rendered
+                if (lines[i])
+                    lines[i].classList.add("CodeMirror__locked-line");
+                // downside is that this is not preserved on editor.refresh()
+                // so setLockedRegions() must be called again
+            }
+            let midLine = Math.floor((start + end) / 2);
+            var marker = document.createElement("div");
+            marker.className = "CodeMirror__gutter-locked-marker";
+            this.editor.setGutterMarker(midLine, "CodeMirror-lock-markers", marker);
+        }
+
+        this.containerDiv.querySelectorAll(".CodeMirror-code > div").forEach(
+            (line) => {
+                line.classList.remove("CodeMirror__locked-line");
+            }
+        );
+
+        if (this.visiblePrefixEnd) {
+            let lastLine = this.editor.posFromIndex(
+                this.visiblePrefixEnd - 1
+            ).line;
+            decorateLines.call(this, 0, lastLine);
+            let endPos = this.editor.posFromIndex(this.visiblePrefixEnd);
+            this.editor.markText(
+                { line: 0, ch: 0 },
+                { line: endPos.line, ch: endPos.ch },
+                {
+                    readOnly: true,
+                    atomic: false,
+                    inclusiveLeft: true,
+                    inclusiveRight: false,
+                }
+            );
+        }
+        if (this.visibleSuffixLength) {
+            let endIndex =
+                this.editor.doc.getValue().length - this.visibleSuffixLength;
+            let endPos = this.editor.posFromIndex(endIndex);
+            let lastLine = this.editor.doc.lastLine();
+            decorateLines.call(this, endPos.line, lastLine);
+            // include preceeding newline
+            let endPos2 = this.editor.posFromIndex(endIndex - 1);
+            this.editor.markText(
+                { line: endPos2.line, ch: endPos2.ch },
+                { line: this.editor.doc.lastLine() + 1 },
+                {
+                    readOnly: true,
+                    atomic: false,
+                    inclusiveLeft: false,
+                    inclusiveRight: true,
+                }
+            );
+        }
+    };
 
     async runButtonHandler() {
         // Disable the run button until the run is finished.
@@ -452,6 +516,7 @@ export class ActiveCode extends RunestoneBase {
         $(ctrlDiv).addClass("ac_actions");
         // Run
         butt = document.createElement("button");
+        butt.title = $.i18n("msg_activecode_run_button_title");
         $(butt).text($.i18n("msg_activecode_run_code"));
         $(butt).addClass("btn btn-success run-button");
         ctrlDiv.appendChild(butt);
@@ -836,7 +901,10 @@ export class ActiveCode extends RunestoneBase {
         var scrubber = document.createElement("div");
         this.timestampP = document.createElement("span");
         this.slideit = function (ev, el) {
-            this.editor.setValue(this.history[$(scrubber).slider("value")]);
+            let submittedCode = this.history[$(scrubber).slider("value")];
+            let code = this.readdLockedCode(submittedCode);
+            this.editor.setValue(code);
+            this.setLockedRegions();
             var curVal = this.timestamps[$(scrubber).slider("value")];
             let pos = $(scrubber).slider("value");
             let outOf = this.history.length;
@@ -850,6 +918,10 @@ export class ActiveCode extends RunestoneBase {
                     div_id: this.divid,
                 });
             }
+            // Only re-highlight lines if we are at initial position
+            // otherwise may be highlighting wrong ones
+            if(pos === 0)
+                this.setHighlightLines();
         };
         $(scrubber).slider({
             max: this.history.length - 1,
@@ -859,6 +931,8 @@ export class ActiveCode extends RunestoneBase {
         $(scrubber).on("slide", this.slideit.bind(this));
         $(scrubber).on("slidechange", this.slideit.bind(this));
         scrubberDiv.appendChild(scrubber);
+        // Add aria-label to the otherwise empty <a> child for scrubber:
+        scrubber.childNodes[0].setAttribute("aria-label", "History slider")
         scrubberDiv.appendChild(this.timestampP);
         // If there is a deadline set then position the scrubber at the last submission
         // prior to the deadline
@@ -874,14 +948,21 @@ export class ActiveCode extends RunestoneBase {
             }
             i = i - 1;
             scrubber.value = Math.max(i, 0);
-            this.editor.setValue(this.history[scrubber.value]);
+            let submittedCode = this.history[scrubber.value];
+            let code = this.readdLockedCode(submittedCode);
+            this.editor.setValue(code);
+            this.setLockedRegions();
             $(scrubber).slider("value", scrubber.value);
         } else if (pos_last) {
             scrubber.value = this.history.length - 1;
-            this.editor.setValue(this.history[scrubber.value]);
+            let submittedCode = this.history[scrubber.value];
+            let code = this.readdLockedCode(submittedCode);
+            this.editor.setValue(code);
+            this.setLockedRegions();
         } else {
             scrubber.value = 0;
         }
+        this.setHighlightLines();
         let pos = $(scrubber).slider("value");
         let outOf = this.history.length;
         let ts = this.timestamps[$(scrubber).slider("value")];
@@ -922,6 +1003,9 @@ export class ActiveCode extends RunestoneBase {
 
         var coachDiv = document.createElement("div");
         coachDiv.classList.add("alert", "alert-warning", "codecoach");
+        coachDiv.setAttribute("aria-live", "polite");
+        coachDiv.setAttribute("aria-atomic", "true");
+        coachDiv.setAttribute("role", "log");
         $(coachDiv).css("display", "none");
         let coachHead = coachDiv.appendChild(document.createElement("h3"));
         coachHead.textContent = $.i18n("msg_activecode_code_coach");
@@ -944,7 +1028,7 @@ export class ActiveCode extends RunestoneBase {
         this.eContainer.setAttribute("role", "log");
         this.eContainer.className = "error alert alert-danger";
         this.eContainer.id = this.divid + "_errinfo";
-        this.eContainer.style.display = "none";
+        this.eContainer.style.visibility = "hidden";
         this.outerDiv.appendChild(this.eContainer);
     }
 
@@ -1274,44 +1358,32 @@ Yet another is that there is an internal error.  The internal error message is: 
             throw $.i18n("msg_activecode_file_not_found", x);
         return Sk.builtinFiles["files"][x];
     }
-    fileReader(divid) {
-        // In the beginning files were just pre tags and we used the divid as the filename
-        let elem = document.getElementById(divid);
-        // In PreTeXt we moved that to a @data-filename
+    fileReader(fileName) {
+        // This function is called by Skulpt to read a file. We will sometimes enter
+        // with internal skulpt filenames and sometimes with filenames referenced from
+        // user source.
+
+        // Check if element is in the DOM
+        // For RST books fileName == element id
+        let elem = document.getElementById(fileName);
         if (elem === null) {
-            elem = document.querySelector(`[data-filename="${divid}"]`);
+            // For PTX books fileName is in data-filename, may or may not == element id
+            elem = document.querySelector(`[data-filename="${fileName}"]`);
         }
-        let data = "";
-        let result = "";
-        if (elem == null && Sk.builtinFiles.files.hasOwnProperty(divid)) {
-            return Sk.builtinFiles["files"][divid];
-        } else {
-            // try remote file unless it ends with .js or .py -- otherwise we'll ask the server for all
-            // kinds of modules that we are trying to import
-            if (!(divid.endsWith(".js") || divid.endsWith(".py"))) {
-                $.ajax({
-                    async: false,
-                    url: `/ns/logger/get_datafile?course_id=${eBookConfig.course}&acid=${divid}`,
-                    success: function (data) {
-                        result = data.detail;
-                    },
-                    error: function (err) {
-                        result = null;
-                    },
-                });
-                if (result) {
-                    return result;
-                }
+
+        // Check if the file is in the Skulpt builtinFiles.
+        if(Sk.builtinFiles.files.hasOwnProperty(fileName)) {
+            let skulptFile = Sk.builtinFiles["files"][fileName];
+            if(elem === null) {
+                return skulptFile;
+            } else {
+                console.log("Name conflict for file: " + fileName + " in Skulpt and in the DOM. Using DOM file.");
             }
         }
-        if (elem == null && result === null) {
-            throw new Sk.builtin.IOError(
-                $.i18n("msg_activecode_no_file_or_dir", divid)
-            );
-        } else {
-            // for backward compatibility - early on we had textarea with the divid on it.
-            // but later this switched to a runestone wrapper.  So we may need to dig for a pre
-            // or a textarea?
+
+        // If in DOM and not in Skulpt builtinFiles, read from the DOM
+        if (elem != null) {
+            let data;
             if (elem.nodeName.toLowerCase() == "textarea") {
                 data = elem.value;
             } else {
@@ -1322,8 +1394,29 @@ Yet another is that there is an internal error.  The internal error message is: 
                     data = elem.textContent;
                 }
             }
+            return data;
         }
-        return data;
+
+        // Try the DB unless fileName ends with .js or .py Skulpt internals will
+        // have these extensions.  We don't want to try to load them from the DB.
+        if (!(fileName.endsWith(".js") || fileName.endsWith(".py"))) {
+            let result = null;
+            $.ajax({
+                async: false,
+                url: `/ns/logger/get_source_code?course_id=${eBookConfig.course}&filename=${fileName}`,
+                success: function (data) {
+                    result = data.detail.file_contents;
+                }
+            });
+            if (result) {
+                return result;
+            } else {
+                throw new Sk.builtin.IOError(
+                    $.i18n("msg_activecode_no_file_or_dir", fileName)
+                );
+            }
+        }
+        // Silent exit for files we didn't attempt to find in DB
     }
     outputfun(text) {
         // bnm python 3
@@ -1393,7 +1486,7 @@ Yet another is that there is an internal error.  The internal error message is: 
             return window.componentMap[divid].editor.getValue();
         } else {
             let request = new Request(
-                `/ns/logger/get_datafile?course_id=${eBookConfig.course}&acid=${divid}`,
+                `/ns/logger/get_source_code?course_id=${eBookConfig.course}&acid=${divid}`,
                 {
                     method: "GET",
                     headers: this.jsonHeaders,
@@ -1401,8 +1494,25 @@ Yet another is that there is an internal error.  The internal error message is: 
             );
             let wresult = await fetch(request);
             let obj = await wresult.json();
-            return obj.detail;
+            return obj.detail.file_contents;
         }
+    }
+
+    trimLockedCode(code) {
+        // remove any visible prefix and suffix code to leave just user editable code
+        let visPrefixLength = this.visiblePrefix ? this.visiblePrefix.length : 0;
+        let visSuffixLength = this.visibleSuffix ? this.visibleSuffix.length : 0;
+        if (visSuffixLength > 0)
+            code = code.slice(visPrefixLength, -visSuffixLength);
+        else
+            code = code.slice(visPrefixLength);
+        return code;
+    }
+
+    readdLockedCode(code) {
+        // add back the visible prefix and suffix code
+        code = (this.visiblePrefix || "") + code + (this.visibleSuffix || "");
+        return code;
     }
 
     async buildProg(useSuffix) {
@@ -1438,13 +1548,14 @@ Yet another is that there is an internal error.  The internal error message is: 
         if (this.historyScrubber === null && !this.autorun) {
             await this.addHistoryScrubber();
         }
+        let userCode = this.trimLockedCode(this.editor.getValue());
         if (
             this.historyScrubber &&
             this.history[$(this.historyScrubber).slider("value")] !=
-            this.editor.getValue()
+            userCode
         ) {
             saveCode = "True";
-            this.history.push(this.editor.getValue());
+            this.history.push(userCode);
             this.timestamps.push(new Date().toLocaleString());
             $(this.historyScrubber).slider(
                 "option",
@@ -1456,7 +1567,9 @@ Yet another is that there is an internal error.  The internal error message is: 
                 "value",
                 this.history.length - 1
             );
-            this.slideit(null);
+            // is this needed? changing value in previous statement
+            // already triggers slideit function
+            //this.slideit(null);
         } else {
             saveCode = "False";
         }
@@ -1476,9 +1589,10 @@ Yet another is that there is an internal error.  The internal error message is: 
 
     // the sid parameter is optional and is used for group submissions
     async logCurrentAnswer(sid) {
+        let submittedCode = this.trimLockedCode(this.editor.getValue());
         let data = {
             div_id: this.divid,
-            code: this.editor.getValue(),
+            code: submittedCode,
             language: this.language,
             errinfo: this.errinfo || "",
             to_save: this.saveCode || "F",
@@ -1536,8 +1650,11 @@ Yet another is that there is an internal error.  The internal error message is: 
                         document.createElement("pre")
                     );
                     checkPre.textContent = p.value;
-                    this.codecoach.append(checkDiv);
                     $(this.codecoach).css("display", "block");
+                    // screenreaders seem to miss error message without the delay
+                    setTimeout(() => {
+                        this.codecoach.append(checkDiv);
+                    }, 10);
                 }
             }
         });
@@ -1605,20 +1722,6 @@ Yet another is that there is an internal error.  The internal error message is: 
         }
     }
 
-    showOutputs() {
-        if (this.output.style.display == "none" || this.output.style.display == "") {
-            this.output.style.display = "block";
-            console.log("block output")
-        }
-        if (this.runCount == 0) {
-            this.output.innerHTML = ""
-            console.log("init innerhtml")
-        }
-        if (this.eContainer.innerHTML == "")
-            this.eContainer.style.display = "none";
-        else
-            this.eContainer.style.display = "block";
-    }
     /* runProg has several async elements to it.
      * 1. Skulpt runs the python program asynchronously
      * 2. The history is restored asynchronously
@@ -1632,7 +1735,6 @@ Yet another is that there is an internal error.  The internal error message is: 
     async runProg(noUI, logResults) {
         console.log("starting runProg");
         this.output.innerHTML = "";
-        window.requestAnimationFrame(this.showOutputs.bind(this));
         stopExecution = false;
         this.outputLineCount = 0;
         this.outputLines = [];
@@ -1656,6 +1758,7 @@ Yet another is that there is an internal error.  The internal error message is: 
             }
         }
         this.eContainer.innerHTML = "";
+        this.eContainer.style.visibility = "hidden";
 
         if (this.codelens) {
             this.codelens.style.display = "none";
@@ -1693,10 +1796,7 @@ Yet another is that there is an internal error.  The internal error message is: 
             $(this.runButton).attr("disabled", "disabled");
             $(this.historyScrubber).off("slidechange");
             $(this.historyScrubber).slider("disable");
-            $(this.outDiv).show({
-                duration: 700,
-                queue: false,
-            });
+            this.outDiv.style.visibility = "visible";
         }
         try {
             await Sk.misceval.asyncToPromise(
@@ -1733,8 +1833,10 @@ Yet another is that there is an internal error.  The internal error message is: 
                 $(this.historyScrubber).slider("enable");
             }
             this.errinfo = err.toString();
-            this.addErrorMessage(err);
-            this.showOutputs(); // update in case there are now errors to display
+            this.eContainer.style.visibility = "visible";
+            setTimeout(() => {
+                this.addErrorMessage(err);
+            }, 10);
         } finally {
             $(this.runButton).removeAttr("disabled");
             this.firstAfterRun = true;
@@ -1801,6 +1903,8 @@ errorText.TokenError = $.i18n("msg_activecode_token_error");
 errorText.TokenErrorFix = $.i18n("msg_activecode_token_error_fix");
 errorText.TimeLimitError = $.i18n("msg_activecode_time_limit_error");
 errorText.TimeLimitErrorFix = $.i18n("msg_activecode_time_limit_error_fix");
+errorText.TimeoutError = $.i18n("msg_activecode_time_limit_error");
+errorText.TimeoutErrorFix = $.i18n("msg_activecode_time_limit_error_fix");
 errorText.Error = $.i18n("msg_activecode_general_error");
 errorText.ErrorFix = $.i18n("msg_activecode_general_error_fix");
 errorText.SyntaxError = $.i18n("msg_activecode_syntax_error");

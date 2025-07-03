@@ -90,7 +90,7 @@ export const assignmentApi = createApi({
         queryFulfilled
           .then(({ data }) => {
             dispatch(assignmentActions.setSelectedAssignmentId(data.detail.id));
-            toast("Assignment created", { icon: "👍" });
+            toast("Assignment created", { icon: "✅" });
           })
           .catch((errorResponse) => {
             const { status, data } = errorResponse.error as {
@@ -115,12 +115,39 @@ export const assignmentApi = createApi({
         url: `/assignment/instructor/assignments/${body.id}`,
         body
       }),
+      invalidatesTags: (_, error) => {
+        if (!error) {
+          return [{ type: "Assignments" }, { type: "Assignment" }];
+        }
+        return [];
+      },
       onQueryStarted: (_, { queryFulfilled }) => {
         queryFulfilled.catch(() => {
           toast("Error updating assignment", {
             icon: "🔥"
           });
         });
+      }
+    }),
+    removeAssignment: build.mutation<void, Assignment>({
+      query: (body) => ({
+        method: "DELETE",
+        url: `/assignment/instructor/assignments/${body.id}`
+      }),
+      invalidatesTags: (_, error) => {
+        if (!error) {
+          return [{ type: "Assignments" }];
+        }
+        return [];
+      },
+      onQueryStarted: (_, { queryFulfilled }) => {
+        queryFulfilled
+          .then(() => {
+            toast("Assignment removed successfully", { icon: "✅" });
+          })
+          .catch(() => {
+            toast("Error removing assignment", { icon: "🔥" });
+          });
       }
     })
   })
@@ -130,5 +157,6 @@ export const {
   useGetAssignmentsQuery,
   useGetAssignmentQuery,
   useUpdateAssignmentMutation,
-  useCreateAssignmentMutation
+  useCreateAssignmentMutation,
+  useRemoveAssignmentMutation
 } = assignmentApi;

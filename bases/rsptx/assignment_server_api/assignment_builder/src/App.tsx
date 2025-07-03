@@ -4,7 +4,13 @@ import { ToastContextProvider } from "@components/ui/ToastContext";
 import { Menubar } from "primereact/menubar";
 import { Toaster } from "react-hot-toast";
 import { useSelector } from "react-redux";
-import { createBrowserRouter, RouterProvider, useSearchParams } from "react-router-dom";
+import {
+  createBrowserRouter,
+  RouterProvider,
+  useSearchParams,
+  useNavigate,
+  Outlet
+} from "react-router-dom";
 
 import { routerService } from "@/router";
 
@@ -21,6 +27,9 @@ import {
 import { AssignmentSummary } from "./renderers/assignmentSummary.jsx";
 import { ExceptionScheduler } from "./renderers/exceptionScheduler.jsx";
 import { selectIsAuthorized } from "./state/assignment/assignSlice.js";
+
+import "@fortawesome/fontawesome-free/css/all.min.css";
+import "katex/dist/katex.min.css";
 
 function OldAssignmentBuilder() {
   const [searchParams] = useSearchParams();
@@ -64,6 +73,34 @@ function AssignmentGrader() {
   );
 }
 
+function AppContent() {
+  const navigate = useNavigate();
+  const items = buildNavBar(window.eBookConfig, navigate);
+  const start = <img alt="" src="/staticAssets/RAIcon.png" height="30px" />;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        overflow: "hidden"
+      }}
+    >
+      <Menubar style={{ flexShrink: 0, flexWrap: "nowrap" }} model={items} start={start} />
+      <div
+        style={{
+          flex: "1 1 auto",
+          overflow: "auto",
+          height: "100%"
+        }}
+      >
+        <Outlet />
+      </div>
+    </div>
+  );
+}
+
 function App() {
   if (useSelector(selectIsAuthorized) === false) {
     return (
@@ -89,52 +126,163 @@ function App() {
    * basename={import.meta.env.BASE_URL}
    */
   console.log("ENV: ", import.meta.env);
-  const items = buildNavBar(window.eBookConfig);
-
-  const start = <img alt="" src="/staticAssets/RAIcon.png" height="30px" />;
 
   const router = routerService.init(
     createBrowserRouter(
       [
         {
           path: "/",
-          element: <OldAssignmentBuilder />
-        },
-        {
-          path: "/builder",
-          async lazy() {
-            let { AssignmentBuilder } = await import("@components/routes/AssignmentBuilder");
+          element: <AppContent />,
+          children: [
+            {
+              index: true,
+              async lazy() {
+                let { AssignmentBuilder } = await import("@components/routes/AssignmentBuilder");
 
-            return { Component: AssignmentBuilder };
-          }
-        },
-        {
-          path: "/builderV2",
-          element: <OldAssignmentBuilder />
-        },
-        {
-          path: "/grader",
-          element: <AssignmentGrader />
-        },
-        {
-          path: "/admin",
-          element: <h1>Coming Soon</h1>
-        },
-        {
-          path: "/except",
-          element: <ExceptionScheduler />
+                return { Component: AssignmentBuilder };
+              }
+            },
+            {
+              path: "builder",
+              async lazy() {
+                let { AssignmentBuilder } = await import("@components/routes/AssignmentBuilder");
+
+                return { Component: AssignmentBuilder };
+              },
+              children: [
+                {
+                  path: "create",
+                  async lazy() {
+                    let { AssignmentBuilderCreate } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderCreate"
+                    );
+
+                    return { Component: AssignmentBuilderCreate };
+                  }
+                },
+                {
+                  path: "create/:step",
+                  async lazy() {
+                    let { AssignmentBuilderCreate } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderCreate"
+                    );
+
+                    return { Component: AssignmentBuilderCreate };
+                  }
+                },
+                {
+                  path: ":assignmentId",
+                  async lazy() {
+                    let { AssignmentBuilderEdit } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderEdit"
+                    );
+
+                    return { Component: AssignmentBuilderEdit };
+                  }
+                },
+                {
+                  path: ":assignmentId/:tab",
+                  async lazy() {
+                    let { AssignmentBuilderEdit } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderEdit"
+                    );
+
+                    return { Component: AssignmentBuilderEdit };
+                  }
+                },
+                {
+                  path: ":assignmentId/exercises/:viewMode",
+                  async lazy() {
+                    let { AssignmentBuilderExercises } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderExercises"
+                    );
+
+                    return { Component: AssignmentBuilderExercises };
+                  }
+                },
+                {
+                  path: ":assignmentId/exercises/:viewMode/:exerciseType",
+                  async lazy() {
+                    let { AssignmentBuilderExercises } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderExercises"
+                    );
+
+                    return { Component: AssignmentBuilderExercises };
+                  }
+                },
+                {
+                  path: ":assignmentId/exercises/:viewMode/:exerciseType/:exerciseSubType",
+                  async lazy() {
+                    let { AssignmentBuilderExercises } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderExercises"
+                    );
+
+                    return { Component: AssignmentBuilderExercises };
+                  }
+                },
+                {
+                  path: ":assignmentId/exercises/:viewMode/:exerciseType/:exerciseSubType/:step",
+                  async lazy() {
+                    let { AssignmentBuilderExercises } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderExercises"
+                    );
+
+                    return { Component: AssignmentBuilderExercises };
+                  }
+                },
+                {
+                  path: ":assignmentId/exercises/:viewMode/:exerciseType/:step",
+                  async lazy() {
+                    let { AssignmentBuilderExercises } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderExercises"
+                    );
+
+                    return { Component: AssignmentBuilderExercises };
+                  }
+                },
+                {
+                  path: ":assignmentId/exercises/edit/:exerciseId",
+                  async lazy() {
+                    let { AssignmentBuilderExercises } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderExercises"
+                    );
+
+                    return { Component: AssignmentBuilderExercises };
+                  }
+                },
+                {
+                  path: ":assignmentId/exercises/edit/:exerciseId/:step",
+                  async lazy() {
+                    let { AssignmentBuilderExercises } = await import(
+                      "./components/routes/AssignmentBuilder/components/AssignmentBuilderExercises"
+                    );
+
+                    return { Component: AssignmentBuilderExercises };
+                  }
+                }
+              ]
+            },
+            {
+              path: "builderV2",
+              element: <OldAssignmentBuilder />
+            },
+            {
+              path: "grader",
+              element: <AssignmentGrader />
+            },
+            {
+              path: "admin",
+              element: <h1>Coming Soon</h1>
+            },
+            {
+              path: "except",
+              element: <ExceptionScheduler />
+            }
+          ]
         }
       ],
       {
-        basename: import.meta.env.VITE_BASE_URL,
-        future: {
-          v7_relativeSplatPath: true,
-          v7_fetcherPersist: true,
-          v7_normalizeFormMethod: true,
-          v7_partialHydration: true,
-          v7_skipActionErrorRevalidation: true,
-          v7_startTransition: true
-        }
+        basename: import.meta.env.VITE_BASE_URL
       }
     )
   );
@@ -142,13 +290,7 @@ function App() {
   return (
     <ToastContextProvider>
       <DialogContextProvider>
-        <Menubar style={{ position: "sticky", top: "0" }} model={items} start={start} />
-        <div className="layout-main-container">
-          <div className="layout-main">
-            <RouterProvider router={router} future={{ v7_startTransition: true }} />
-          </div>
-        </div>
-
+        <RouterProvider router={router} future={{ v7_startTransition: true }} />
         <Toaster toastOptions={{ duration: 3000 }} />
       </DialogContextProvider>
     </ToastContextProvider>

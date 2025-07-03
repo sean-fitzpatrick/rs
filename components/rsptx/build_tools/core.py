@@ -25,8 +25,8 @@ from shutil import copytree
 # -----------
 import click
 import lxml.etree as ET
-from lxml import ElementInclude
 import pretext
+from pretext.utils import is_earlier_version
 import pretext.project
 
 # import xml.etree.ElementTree as ET
@@ -39,6 +39,7 @@ from sqlalchemy.sql import text
 from rsptx.logging import rslogger
 from runestone.server import get_dburl
 from rsptx.db.models import Library, LibraryValidator
+from rsptx.db.crud import update_source_code_sync
 from rsptx.response_helpers.core import canonical_utcnow
 import pdb
 
@@ -82,7 +83,14 @@ def _build_runestone_book(config, course, click=click):
     # process and **know** we are making a build for a runestone server. In that
     # case we need to make sure that the dynamic_pages flag is set to True in
     # pavement.py
-    if hasattr(click, "worker") and paver_vars["dynamic_pages"] is not True:
+    dp = True
+    if "dynamic_pages" in paver_vars:
+        if paver_vars["dynamic_pages"] is not True:
+            dp = False
+            if "dynamic_pages" in paver_vars["options"].build.template_args:
+                dp = paver_vars["options"].build.template_args["dynamic_pages"]
+
+    if hasattr(click, "worker") and dp is not True:
         click.echo("dynamic_pages must be set to True in pavement.py")
         return False
     if paver_vars["project_name"] != course:
@@ -98,7 +106,7 @@ def _build_runestone_book(config, course, click=click):
 
     click.echo("Running runestone build --all")
     res = subprocess.run("runestone build --all", shell=True, capture_output=True)
-    with open("cli.log", "wb") as olfile:
+    with open("author_build.log", "wb") as olfile:
         olfile.write(res.stdout)
         olfile.write(b"\n====\n")
         olfile.write(res.stderr)
@@ -116,7 +124,7 @@ def _build_runestone_book(config, course, click=click):
         return False
 
     resd = subprocess.run("runestone deploy", shell=True, capture_output=True)
-    with open("cli.log", "ab") as olfile:
+    with open("author_build.log", "ab") as olfile:
         olfile.write(res.stdout)
         olfile.write(b"\n====\n")
         olfile.write(res.stderr)
@@ -151,18 +159,24 @@ def _build_ptx_book(config, gen, manifest, course, click=click, target="runeston
             target = "runestone"
         # sets output_dir to `published/<course>`
         # and {"host-platform": "runestone"} in stringparams
-        rs = check_project_ptx(course=course, target=target)
+        rs = check_project_ptx(click=click, course=course, target=target)
         if not rs:
             return False
 
         logger = logging.getLogger("ptxlogger")
-        logger.setLevel(logging.DEBUG)
         string_io_handler = StringIOHandler()
         logger.addHandler(string_io_handler)
+        if hasattr(click, "worker"):
+            click.add_logger(logger)
         click.echo("Building the book")
 
         rs.build()  # build the book, generating assets as needed
-        log_path = Path(os.environ.get("BOOK_PATH")) / rs.output_dir / "cli.log"
+        log_path = (
+            Path(os.environ.get("BOOK_PATH")) / rs.output_dir / "author_build.log"
+        )
+        if not log_path.parent.exists():
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+        click.echo(f"Writing log to {log_path}")
         with open(log_path, "a") as olfile:
             olfile.write(string_io_handler.getvalue())
 
@@ -187,7 +201,7 @@ def _build_ptx_book(config, gen, manifest, course, click=click, target="runeston
         # Fetch and copy the runestone components release as advertised by the manifest
         # - Use wget to get all the js files and put them in _static
         # Beginning with 2.6.1 PreTeXt populates the _static folder with the latest
-        if pretext.VERSION < "2.6.1":
+        if is_earlier_version(pretext.VERSION, "2.6.1"):
             click.echo("populating with the latest runestone files")
             populate_static(config, mpath, course)
         # update the library page
@@ -293,6 +307,13 @@ def extract_docinfo(tree, string, attr=None, click=click):
     string: The name of the element we are looking for
     Helper to get the contents of several tags from the docinfo element of a PreTeXt book
     """
+    authstr = ""
+    if string == "author":
+        el = tree.findall(f"./{string}")
+        for a in el:
+            authstr += ET.tostring(a, encoding="unicode", method="text").strip() + ", "
+        authstr = authstr[:-2]
+        return authstr
     el = tree.find(f"./{string}")
     if attr is not None and el is not None:
         print(f"{el.attrib[attr]=}")
@@ -326,7 +347,9 @@ def update_library(
         subtitle = extract_docinfo(docinfo, "subtitle")
         description = extract_docinfo(docinfo, "blurb")
         shelf = extract_docinfo(docinfo, "shelf")
+        author = extract_docinfo(docinfo, "author")
     else:
+        author = ""
         try:
             config_vars = {}
             exec(open("conf.py").read(), config_vars)
@@ -361,11 +384,14 @@ def update_library(
     Session = sessionmaker()
     eng.connect()
     Session.configure(bind=eng)
+    sess = Session()
 
     try:
-        res = eng.execute(f"select * from library where basecourse = '{course}'")
-    except Exception:
-        click.echo("Missing library table?  You may need to run an alembic migration.")
+        res = sess.execute(
+            text("select * from library where basecourse = :course"), {"course": course}
+        )
+    except Exception as e:
+        click.echo(f"Error querying library table: {e}")
         return False
     # using the Model rather than raw sql ensures that everything is properly escaped
     build_time = canonical_utcnow()
@@ -382,6 +408,7 @@ def update_library(
             last_build=build_time,
             for_classes="F",
             is_visible="T",
+            authors=author,
         )
         new_book = Library(**new_lib.dict())
         with Session.begin() as s:
@@ -410,6 +437,7 @@ def update_library(
                 build_system=build_system,
                 main_page=main_page,
                 last_build=build_time,
+                authors=author,
             )
         )
         with Session.begin() as session:
@@ -456,10 +484,10 @@ def populate_static(config, mpath: Path, course: str, click=click):
         # remove the old files, but keep the lunr-pretext-search-index.js file if it exists
         for f in os.listdir(sdir):
             try:
-                if "lunr-pretext" not in f:
+                if "lunr-pretext" not in f and Path(sdir, f).is_file():
                     os.remove(sdir / f)
             except Exception:
-                click.echo(f"ERROR - could not delete {f}")
+                click.echo(f"ERROR - could not delete {sdir} / {f}")
         # call wget non-verbose, recursive, no parents, no hostname, no directoy copy files to sdir
         # trailing slash is important or otherwise you will end up with everything below runestone
         res = subprocess.call(
@@ -498,13 +526,21 @@ def manifest_data_to_db(course_name, manifest_path):
     Session.configure(bind=engine)
     sess = Session()
     meta = MetaData()
-    chapters = Table("chapters", meta, autoload=True, autoload_with=engine)
-    subchapters = Table("sub_chapters", meta, autoload=True, autoload_with=engine)
-    questions = Table("questions", meta, autoload=True, autoload_with=engine)
-    source_code = Table("source_code", meta, autoload=True, autoload_with=engine)
-    course_attributes = Table(
-        "course_attributes", meta, autoload=True, autoload_with=engine
-    )
+    chapters = Table("chapters", meta, autoload_with=engine)
+    subchapters = Table("sub_chapters", meta, autoload_with=engine)
+    questions = Table("questions", meta, autoload_with=engine)
+    book_author = Table("book_author", meta, autoload_with=engine)
+    source_code = Table("source_code", meta, autoload_with=engine)
+    course_attributes = Table("course_attributes", meta, autoload_with=engine)
+
+    # Get the author name from the manifest
+    tree = ET.parse(manifest_path)
+    docinfo = tree.find("./library-metadata")
+    author = extract_docinfo(docinfo, "author")
+    res = sess.execute(book_author.select().where(book_author.c.book == course_name))
+    book_author_data = res.first()
+    # the owner is the username of the author
+    owner = book_author_data.author
 
     rslogger.info(f"Cleaning up old chapters info for {course_name}")
     # Delete the chapter rows before repopulating. Subchapter rows are taken
@@ -592,6 +628,8 @@ def manifest_data_to_db(course_name, manifest_path):
                 subchapter=subchapter.find("./id").text,
                 chapter=chapter.find("./id").text,
                 from_source="T",
+                author=author,
+                owner=owner,
             )
             if res:
                 ins = (
@@ -661,7 +699,7 @@ def manifest_data_to_db(course_name, manifest_path):
                 practice = "F"
                 if qtype == "webwork":
                     practice = "T"
-                if el and "practice" in el.attrib:
+                if el is not None and "practice" in el.attrib:
                     practice = "T"
                 autograde = ""
                 if "====" in dbtext:
@@ -696,13 +734,17 @@ def manifest_data_to_db(course_name, manifest_path):
                     qnumber=qlabel,
                     optional=optional,
                     practice=practice,
+                    author=author,
+                    owner=owner,
                 )
                 if old_ww_id:
                     namekey = old_ww_id
                 else:
                     namekey = idchild
                 res = sess.execute(
-                    f"""select * from questions where name='{namekey}' and base_course='{course_name}'"""
+                    text(
+                        f"""select * from questions where name='{namekey}' and base_course='{course_name}'"""
+                    )
                 ).first()
                 if res:
                     ins = (
@@ -729,29 +771,33 @@ def manifest_data_to_db(course_name, manifest_path):
                         filename = el.attrib["data-filename"]
                     else:
                         filename = el.attrib["id"]
+                    id = el.attrib["id"]
 
-                    # write datafile contents to the source_code table
-                    res = res = sess.execute(
-                        f"""select * from source_code where acid='{filename}' and course_id='{course_name}'"""
-                    ).first()
-
-                    vdict = dict(
-                        acid=filename, course_id=course_name, main_code=file_contents
+                    # manifest_data_to_db gets called from sync/async contexts
+                    # so must use sync DB access to avoid asyncio error
+                    # if process_manifest moves to async we can swap this out for async and remove the sync version
+                    update_source_code_sync(
+                        acid=id,
+                        course_id=course_name,
+                        main_code=file_contents,
+                        filename=filename,
                     )
-                    if res:
-                        upd = (
-                            source_code.update()
-                            .where(
-                                and_(
-                                    source_code.c.acid == filename,
-                                    source_code.c.course_id == course_name,
-                                )
-                            )
-                            .values(**vdict)
-                        )
-                    else:
-                        upd = source_code.insert().values(**vdict)
-                    sess.execute(upd)
+
+            for sourceEl in subchapter.findall("./source"):
+                id = sourceEl.attrib["id"]
+                file_contents = sourceEl.text
+                if "filename" in sourceEl.attrib:
+                    filename = sourceEl.attrib["filename"]
+                else:
+                    filename = sourceEl.attrib["id"]
+
+                # see note above about sync/async
+                update_source_code_sync(
+                    acid=id,
+                    course_id=course_name,
+                    main_code=file_contents,
+                    filename=filename,
+                )
 
     latex = root.find("./latex-macros")
     rslogger.info("Setting attributes for this base course")
@@ -764,9 +810,9 @@ def manifest_data_to_db(course_name, manifest_path):
         ww_minor = None
 
     res = sess.execute(
-        f"select * from courses where course_name ='{course_name}'"
+        text(f"select * from courses where course_name ='{course_name}'")
     ).first()
-    cid = res["id"]
+    cid = res.id
 
     # Only delete latex_macros and markup_system if they are present. Leave other attributes alone.
     to_delete = ["latex_macros", "markup_system"]

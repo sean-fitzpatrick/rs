@@ -3,7 +3,7 @@
 // TODO: remove document.querySelector dependency
 export async function renderRunestoneComponent(
   previewRef, // This is a React ref object
-  moreOpts,
+  moreOpts
 ) {
   /**
    *  The HTML template for the component is in the innerHTML of the
@@ -23,7 +23,7 @@ export async function renderRunestoneComponent(
 
   previewRef.current.innerHTML = previewRef.current.innerHTML.replace(
     patt,
-    `${window.eBookConfig.app}/books/published/${window.eBookConfig.basecourse}/_images`,
+    `${window.eBookConfig.app}/books/published/${window.eBookConfig.basecourse}/_images`
   );
 
   if (typeof window.componentMap === "undefined") {
@@ -74,7 +74,16 @@ export async function renderRunestoneComponent(
       previewRef.current.innerHTML = `<p>Preview not available for ${componentKind}</p>`;
     } else {
       try {
+        // Grab the preamble if it exists.  
+        // add it to opt so that it can be used by the component factory
+        // This is used for mathjax processing of the preview.
+        let preamble = document.querySelector("div.hidden-content.process-math");
+        if (preamble) {
+          preamble = preamble.innerHTML;
+          opt.preamble = preamble;
+        }
         let res = window.component_factory[componentKind](opt);
+
 
         res.multiGrader = moreOpts.multiGrader;
         if (componentKind === "activecode") {
@@ -100,7 +109,7 @@ export function createActiveCodeTemplate(
   language,
   prefix_code,
   starter_code,
-  suffix_code,
+  suffix_code
 ) {
   var preview_src = `
 <div class="ptx-runestone-container">

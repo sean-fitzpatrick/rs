@@ -1,3 +1,112 @@
+// Configuration for the PI steps and helper functions to handle step progression
+const STEP_CONFIG = {
+    vote1: {
+        next: ['makep', 'facechat', 'makeabgroups'],
+        status: 'Vote 1 Stopped'
+    },
+    makep: {
+        next: ['vote2'],
+        status: 'Text Chat in Progress…'
+    },
+    facechat: {
+        next: ['vote2'],
+        status: 'In-person Chat in Progress…'
+    },
+    makeabgroups: {
+        next: ['vote2'],
+        status: 'A/B Experiment in Progress…'
+    },
+    vote2: {
+        next: ['vote3'],
+        status: 'Vote 2 in Progress…'
+    },
+    vote3: {
+        next: [],
+        status: 'Proceed to Next Question'
+    }
+};
+
+const CHAT_MODALITIES = ['makep', 'facechat', 'makeabgroups'];
+
+function disableButton(btn) {
+    if (btn) btn.disabled = true;
+}
+function enableButton(btn) {
+    if (btn) btn.disabled = false;
+}
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+function batchDisable(ids) {
+    ids.forEach(i => {
+        const b = document.getElementById(i);
+        if (b) b.disabled = true;
+    });
+}
+function batchEnable(ids) {
+    ids.forEach(i => {
+        const b = document.getElementById(i);
+        if (b) b.disabled = false;
+    });
+}
+
+function markStepComplete(btn) {
+    if (!btn) return;
+    const step = btn.closest('.pi-step');
+    if (!step) return;
+    const inner = step.querySelector('.pi-step-number-inner');
+    step.classList.remove('active');
+    if (inner) {
+        inner.textContent = '✓';
+        inner.style.backgroundColor = '#1A6A8399';
+        inner.style.color = '#FFFFFF';
+    }
+    const group = btn.closest('.pi-step-group');
+    if (group) group.classList.remove('active');
+}
+
+function markStepActive(btn) {
+    if (!btn) return;
+    const step = btn.closest('.pi-step');
+    const group = btn.closest('.pi-step-group');
+    if (step) step.classList.add('active');
+    if (group) group.classList.add('active');
+}
+
+function handleButtonClick(event) {
+    const id = event.target.id;
+    const config = STEP_CONFIG[id];
+    if (!config) {
+        // If no config, do nothing
+        return;
+    }
+
+    // 1) Update the session‐status text
+    setText('pi-session-status', config.status);
+
+    // 2) Disable the clicked button
+    const currentBtn = document.getElementById(id);
+    disableButton(currentBtn);
+
+    // 3) If this was a “chat modality” (makep, facechat, makeabgroups), disable all chat buttons
+    if (CHAT_MODALITIES.includes(id)) {
+        batchDisable(CHAT_MODALITIES);
+    }
+
+    // 4) Mark the current step as complete (✓, remove “active” outline)
+    markStepComplete(currentBtn);
+
+    // 5) Enable the next step(s) in config.next
+    batchEnable(config.next);
+
+    // 6) Highlight (add “active” class) to the very first next step
+    if (Array.isArray(config.next) && config.next.length > 0) {
+        const nextBtn = document.getElementById(config.next[0]);
+        markStepActive(nextBtn);
+    }
+}
+
 var ws = null;
 var alertSet = false;
 function connect(event) {
@@ -45,11 +154,22 @@ function connect(event) {
                     let itimerid = setInterval(async function () {
                         if (count > 0) {
                             messarea.style.color = "red";
-                            messarea.innerHTML = `<h3>Finish Up only ${count} seconds remaining</h3>`;
+                            messarea.innerHTML = `<h3>Finish up! Only ${count} seconds remaining.</h3>`;
                             count = count - 1;
                         } else {
-                            console.log("Timer expired clean up and get ready to chat");
+                            console.log("Timer expired. Clean up and get ready to chat!");
+                            voteStopped = true;
                             messarea.style.color = "black";
+                            // if the student did not press the button in vote 1
+                            if (!eBookConfig.isInstructor) {
+                                // If the student has not voted yet, disable the submit button
+                                let qq = window.componentMap[currentQuestion];
+                                if (qq.didSubmit == false && qq.isAnswered == true) {
+                                    qq.checkCurrentAnswer();
+                                    qq.logCurrentAnswer();
+                                }
+                            }
+
                             // hide the discussion
                             let discPanel = document.getElementById("discussion_panel");
                             console.log("voteNum is " + getVoteNum());
@@ -58,12 +178,14 @@ function connect(event) {
                             }
                             let currAnswer = window.componentMap[currentQuestion].answer;
                             if (typeof currAnswer === "undefined") {
-                                messarea.innerHTML = `<h3>You have not answered the question</h3><p>You will not be able to participate in any discussion unless you answer the question.</p>`;
+                                if (!eBookConfig.isInstructor) {
+                                    messarea.innerHTML = `<h3>You have not answered the question</h3><p>You will not be able to participate in any discussion unless you answer the question.</p>`;
+                                }
                             } else {
                                 if (getVoteNum() < 2) {
-                                    messarea.innerHTML = `<h3>Please Give an explanation for your answer</h3><p>Then discuss your answer with your group members</p>`;
+                                    messarea.innerHTML = `<h3>Please give an explanation for your answer.</h3><p>Then, discuss your answer with your group members.</p>`;
                                 } else {
-                                    messarea.innerHTML = `<h3>Voting for this question is complete</h3>`;
+                                    messarea.innerHTML = `<h3>Voting for this question is complete.</h3>`;
                                     let feedbackDiv = document.getElementById(`${currentQuestion}_feedback`);
                                     feedbackDiv.style.display = "none";
                                 }
@@ -101,6 +223,7 @@ function connect(event) {
                     break;
                 case "enableVote":
                     console.log("Got enableVote message");
+                    voteStopped = false;
                     window.componentMap[currentQuestion].submitButton.disabled = false;
                     window.componentMap[currentQuestion].submitButton.innerHTML =
                         "Submit";
@@ -116,14 +239,14 @@ function connect(event) {
                         setTimeout(() => {
                             if (studentVoteCount > 1 && !vote2done && !alertSet) {
                                 alert(
-                                    "You must vote twice! Even if want to keep your answer the same."
+                                    "You must vote twice, even if want to keep your answer the same!"
                                 );
                                 alertSet = true;
                             }
                         }, 10000);
                     }
                     messarea = document.getElementById("imessage");
-                    messarea.innerHTML = `<h3>Time to make your 2nd vote</h3>`;
+                    messarea.innerHTML = `<h3>Time to make your 2nd vote!</h3>`;
                     let feedbackDiv = document.getElementById(`${currentQuestion}_feedback`);
                     feedbackDiv.innerHTML = "";
                     feedbackDiv.className = "";
@@ -147,23 +270,27 @@ function connect(event) {
                     let peerlist = document.getElementById("peerlist");
                     const ordA = 65;
                     adict = JSON.parse(mess.answer);
-                    let peersel = document.getElementById("peersel");
                     for (const key in adict) {
                         let currAnswer = adict[key];
                         let newpeer = document.createElement("p");
                         newpeer.innerHTML = `${key} answered ${currAnswer}`;
                         peerlist.appendChild(newpeer);
-                        let peeropt = document.createElement("option");
-                        peeropt.value = key;
-                        peeropt.innerHTML = key;
-                        peersel.appendChild(peeropt);
-                        peersel.addEventListener("change", function () {
-                            $(".ratingradio").prop("checked", false);
-                        });
                     }
                     break;
                 case "enableFaceChat":
                     console.log("got enableFaceChat message");
+                    console.log(`group = ${mess.group}`);
+                    let groupList = [];
+                    if (mess.group) {
+                        groupList = mess.group;
+                    }
+                    messarea = document.getElementById("imessage");
+                    messarea.innerHTML = `<h3>Time to talk to your group</h3>
+                    <ul>`;
+                    for (const peer of groupList) {
+                        messarea.innerHTML += `<li>${peer}</li>`;
+                    }
+                    messarea.innerHTML += `</ul>`;
                     let facechat = document.getElementById("group_select_panel");
                     if (facechat) {
                         facechat.style.display = "block";
@@ -268,7 +395,10 @@ async function sendLtiScores(event) {
 // specific user
 async function sendMessage(event) {
     var input = document.getElementById("messageText");
-    //#ws.send(JSON.stringify(mess))
+    if (input.value.trim() === "") {
+        input.focus();
+        return;
+    }
     let mess = {
         type: "text",
         from: `${user}`,
@@ -286,10 +416,14 @@ async function sendMessage(event) {
     message.appendChild(content);
     messages.appendChild(message);
     input.value = "";
+    // focus tehe input box again
+    input.focus();
     // not needed for onclick event.preventDefault()
 }
 
 function warnAndStopVote(event) {
+    handleButtonClick(event);
+
     let mess = {
         type: "control",
         sender: `${user}`,
@@ -315,6 +449,8 @@ function warnAndStopVote(event) {
         if (sendScore) {
             sendScore.disabled = false;
         }
+        const hideShowGraphButton = document.querySelector("#hideShowGraph");
+        hideShowGraphButton.disabled = false;
     }
     event.srcElement.disabled = true;
 }
@@ -352,12 +488,15 @@ async function makePartners(event, is_ab) {
         alert(`Pairs not made! ${spec}`);
     } else {
         // success
+        handleButtonClick(event);
         butt.disabled = true;
         document.querySelector("#vote2").disabled = false;
     }
 }
 
 async function enableFaceChat(event) {
+    handleButtonClick(event);
+
     let mess = {
         type: "control",
         sender: `${user}`,
@@ -379,6 +518,8 @@ async function enableFaceChat(event) {
 }
 
 function startVote2(event) {
+    handleButtonClick(event);
+
     let butt = document.querySelector("#vote2");
     butt.classList.replace("btn-info", "btn-secondary");
     event.srcElement.disabled = true;
@@ -464,36 +605,6 @@ async function publishMessage(data) {
     let spec = await resp.json();
 }
 
-async function ratePeer(radio) {
-    let jsheaders = new Headers({
-        "Content-type": "application/json; charset=utf-8",
-        Accept: "application/json",
-    });
-    let peerToRate = document.getElementById("peersel").value;
-    let eventInfo = {
-        sid: eBookConfig.username,
-        div_id: currentQuestion,
-        event: "ratepeer",
-        peer_id: peerToRate,
-        course_id: eBookConfig.course,
-        rating: radio.value,
-    };
-    let request = new Request("/runestone/peer/log_peer_rating", {
-        method: "POST",
-        headers: jsheaders,
-        body: JSON.stringify(eventInfo),
-    });
-    try {
-        let response = await fetch(request);
-        if (!response.ok) {
-            throw new Error("Failed to save the log entry");
-        }
-        post_return = response.json();
-    } catch (e) {
-        alert(`Error: Your action was not saved! The error was ${e}`);
-        console.log(`Error: ${e}`);
-    }
-}
 
 // This function is only for use with the async mode of peer instruction
 //
@@ -543,7 +654,7 @@ async function showPeerEnableVote2() {
     peerEl.innerHTML = peerMess;
     let nextStep = document.getElementById("nextStep");
     nextStep.innerHTML =
-        "Please Answer the question again.  Even if you do not wish to change your answer.  After answering click the button to go on to the next question.";
+        "Please answer the question again, even if you do not wish to change your answer. After answering, click the button to go on to the next question.";
     nextStep.style.color = "red";
     let cq = document.getElementById(`${currentQuestion}_feedback`);
     cq.style.display = "none";

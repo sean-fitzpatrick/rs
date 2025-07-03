@@ -20,6 +20,7 @@ import re
 import uuid
 from collections import OrderedDict, Counter
 from random import randint
+import asyncio
 
 # Third Party library
 # -------------------
@@ -31,6 +32,9 @@ import pandas as pd
 import altair as alt
 
 from rs_practice import _get_qualified_questions
+
+from rsptx.db.crud import fetch_lti_version
+from rsptx.lti1p3.core import attempt_lti1p3_score_updates
 
 logger = logging.getLogger(settings.logger)
 logger.setLevel(settings.log_level)
@@ -68,6 +72,7 @@ AUTOGRADE_POSSIBLE_VALUES = dict(
 AUTOGRADEABLE = set(
     [
         "clickablearea",
+        "codelens",
         "dragndrop",
         "fillintheblank",
         "khanex",
@@ -648,6 +653,9 @@ def admin():
     else:
         consumer = ""
         secret = ""
+
+    lti_version = fetch_lti_version(course.id)
+
     # valid exams to show are:
     # Exams the instructor has created for their course
     # Or exams embedded in the base course.  Embedded exams will have from_source
@@ -668,16 +676,34 @@ def admin():
     except Exception:
         motd = "You can cusomize this mesage by editing /static/motd.html"
     logger.debug(course_attrs)
+
     if "groupsize" not in course_attrs:
         course_attrs["groupsize"] = "3"
-    if "show_points" not in course_attrs:
+
+    if "show_points" not in course_attrs or course_attrs["show_points"] != "true":
         course_attrs["show_points"] = False
     else:
-        course_attrs["show_points"] = (
-            True if course_attrs["show_points"] == "true" else False
-        )
+        course_attrs["show_points"] = True
+
+    if (
+        "ignore_lti_dates" not in course_attrs
+        or course_attrs["ignore_lti_dates"] != "true"
+    ):
+        course_attrs["ignore_lti_dates"] = False
+    else:
+        course_attrs["ignore_lti_dates"] = True
+
+    if (
+        "no_lti_auto_grade_update" not in course_attrs
+        or course_attrs["no_lti_auto_grade_update"] != "true"
+    ):
+        course_attrs["no_lti_auto_grade_update"] = False
+    else:
+        course_attrs["no_lti_auto_grade_update"] = True
+
     return dict(
         startDate=date,
+        courseDomain=course.domain_name,
         coursename=auth.user.course_name,
         course_id=auth.user.course_name,
         instructors=instructordict,
@@ -694,6 +720,7 @@ def admin():
         motd=motd,
         consumer=consumer,
         secret=secret,
+        lti_version=lti_version,
         examlist=exams,
         is_instructor=True,
         **course_attrs,
@@ -745,7 +772,7 @@ def grading():
     response.title = "Grading"
     assignments = {}
     assignments_query = db(db.assignments.course == auth.user.course_id).select()
-
+    selected_assignment = request.vars.selected_assignment
     assignmentids = {}
     assignment_deadlines = {}
     question_points = {}
@@ -833,6 +860,11 @@ def grading():
 
     course_attrs = getCourseAttributesDict(course.id, base_course)
 
+    is_lti_course = (
+        asyncio.get_event_loop().run_until_complete(fetch_lti_version(course.id))
+        != None
+    )
+
     set_latex_preamble(base_course)
     return dict(
         assignmentinfo=json.dumps(assignments),
@@ -846,6 +878,7 @@ def grading():
         sendLTIGradeURL=URL("assignments", "send_assignment_score_via_LTI"),
         getCourseStudentsURL=URL("admin", "course_students"),
         get_assignment_release_statesURL=URL("admin", "get_assignment_release_states"),
+        is_lti_course=is_lti_course,
         course_id=auth.user.course_name,
         assignmentids=json.dumps(assignmentids),
         assignment_deadlines=json.dumps(assignment_deadlines),
@@ -855,6 +888,7 @@ def grading():
         webwork_js_version=course_attrs.get("webwork_js_version", "2.17"),
         default_language=course_attrs.get("default_language", "python"),
         course=course,
+        selected_assignment=selected_assignment,
     )
 
 
@@ -1133,6 +1167,7 @@ def createAssignment():
                 nofeedback=old_assignment.nofeedback,
                 nopause=old_assignment.nopause,
                 description=old_assignment.description,
+                kind=old_assignment.kind,
             )
             old_questions = db(
                 db.assignment_questions.assignment_id == old_assignment.id
@@ -1377,6 +1412,7 @@ def edit_question():
         return json.dumps("Could not find question {} to update".format(old_qname))
 
     author = auth.user.first_name + " " + auth.user.last_name
+    owner = auth.user.username
     timestamp = datetime.datetime.utcnow()
     chapter = old_question.chapter
     question_type = old_question.question_type
@@ -1389,7 +1425,7 @@ def edit_question():
 
     if (
         old_qname == new_qname
-        and old_question.author.lower() != author.lower()
+        and old_question.owner != owner
         and not is_editor(auth.user.id)
     ):
         return json.dumps(
@@ -1397,7 +1433,14 @@ def edit_question():
         )
 
     if old_qname != new_qname:
-        newq = db(db.questions.name == new_qname).select().first()
+        newq = (
+            db(
+                (db.questions.name == new_qname)
+                & (db.questions.base_course == base_course)
+            )
+            .select()
+            .first()
+        )
         if newq and newq.author.lower() != author.lower():
             return json.dumps(
                 "Name taken, you cannot replace a question you did not author"
@@ -1420,6 +1463,7 @@ def edit_question():
             question=question,
             name=new_qname,
             author=author,
+            owner=owner,
             base_course=base_course,
             timestamp=timestamp,
             chapter=chapter,
@@ -1776,15 +1820,56 @@ def releasegrades():
         logger.error(ex)
         return "ERROR"
 
+    # this is now redundant as we send lti as we grade
     if released:
         # send lti grades
+        lti_method = asyncio.get_event_loop().run_until_complete(
+            fetch_lti_version(auth.user.course_id)
+        )
+        if lti_method == "1.3":
+            # need force... released still somehow shows as false in DB
+            asyncio.get_event_loop().run_until_complete(
+                attempt_lti1p3_score_updates(int(assignmentid), force=True)
+            )
+        if lti_method == "1.1":
+            assignment = _get_assignment(assignmentid)
+            lti_record = _get_lti_record(session.oauth_consumer_key)
+            if assignment and lti_record:
+                send_lti_grades(
+                    assignment.id,
+                    assignment.points,
+                    auth.user.course_id,
+                    lti_record,
+                    db,
+                )
+    return "Success"
+
+
+@auth.requires(
+    lambda: verifyInstructorStatus(auth.user.course_id, auth.user),
+    requires_login=True,
+)
+def push_lti_grades():
+    assignmentid = request.vars["assignmentid"]
+    print(
+        f"push_lti_grades: assignmentid={assignmentid}, course_id={auth.user.course_id}"
+    )
+    # send lti grades
+    lti_method = asyncio.get_event_loop().run_until_complete(
+        fetch_lti_version(auth.user.course_id)
+    )
+    if lti_method == "1.3":
+        asyncio.get_event_loop().run_until_complete(
+            attempt_lti1p3_score_updates(int(assignmentid), force=True)
+        )
+    if lti_method == "1.1":
         assignment = _get_assignment(assignmentid)
         lti_record = _get_lti_record(session.oauth_consumer_key)
         if assignment and lti_record:
             send_lti_grades(
                 assignment.id, assignment.points, auth.user.course_id, lti_record, db
             )
-    return "Success"
+    return "Grades submitted to LTI tool"
 
 
 @auth.requires(
@@ -2074,7 +2159,17 @@ def _add_q_meta_info(qrow):
 
     return res
 
-
+def _get_assignment_kind(assignment):
+    """
+    Returns the kind of assignment, based on the assignment's `from_source` field.
+    """
+    if assignment.is_timed == 'T':
+        return "Timed"
+    elif assignment.is_peer == 'T':
+        return "Peer"
+    else:
+        return "Regular"
+    
 @auth.requires(
     lambda: verifyInstructorStatus(auth.user.course_id, auth.user),
     requires_login=True,
@@ -2112,6 +2207,7 @@ def get_assignment():
         assignment_data["due_date"] = None
     assignment_data["description"] = assignment_row.description
     assignment_data["visible"] = assignment_row.visible
+    assignment_data["grades_released"] = assignment_row.released
     assignment_data["enforce_due"] = assignment_row.enforce_due
     assignment_data["is_timed"] = assignment_row.is_timed
     assignment_data["time_limit"] = assignment_row.time_limit
@@ -2120,7 +2216,8 @@ def get_assignment():
     assignment_data["nopause"] = assignment_row.nopause
     assignment_data["is_peer"] = assignment_row.is_peer
     assignment_data["peer_async_visible"] = assignment_row.peer_async_visible
-
+    assignment_data["kind"] = _get_assignment_kind(assignment_row)
+    
     # Still need to get:
     #  -- timed properties of assignment
     #  (See https://github.com/RunestoneInteractive/RunestoneServer/issues/930)
@@ -2174,7 +2271,10 @@ def get_assignment():
     a_q_rows = db(
         (db.assignment_questions.assignment_id == assignment_id)
         & (db.assignment_questions.question_id == db.questions.id)
-        & (db.assignment_questions.reading_assignment == None)  # noqa: E711
+        & (
+            (db.assignment_questions.reading_assignment == None)
+            | (db.assignment_questions.reading_assignment == "F")
+        )  # noqa: E711
     ).select(orderby=db.assignment_questions.sorting_priority)
     # return json.dumps(db._lastsql)
     questions_data = []
@@ -2221,6 +2321,7 @@ def save_assignment():
 
     assignment_id = request.vars.get("assignment_id")
     isVisible = request.vars["visible"]
+    gradesReleased = request.vars["grades_released"]
     isEnforced = request.vars["enforce_due"]
     is_timed = request.vars["is_timed"]
     time_limit = request.vars["timelimit"]
@@ -2228,10 +2329,17 @@ def save_assignment():
     nopause = request.vars["nopause"]
     is_peer = request.vars["is_peer"]
     peer_async_visible = request.vars["peer_async_visible"]
+    kind = "Regular"
+    if is_peer == "T":
+        kind = "Peer"
+    elif is_timed == "T":
+        kind = "Timed"
     try:
         d_str = request.vars["due"]
         format_str = "%Y/%m/%d %H:%M"
         due = datetime.datetime.strptime(d_str, format_str)
+        # todo:  add timezone support - due is in the browsers local timezone we want to store in utc
+
     except Exception:
         logger.error("Bad Date format for assignment: {}".format(d_str))
         due = datetime.datetime.utcnow() + datetime.timedelta(7)
@@ -2244,6 +2352,7 @@ def save_assignment():
             duedate=due,
             is_timed=is_timed,
             visible=isVisible,
+            released=gradesReleased,
             enforce_due=isEnforced,
             time_limit=time_limit,
             nofeedback=nofeedback,
@@ -2251,6 +2360,7 @@ def save_assignment():
             is_peer=is_peer,
             current_index=0,
             peer_async_visible=peer_async_visible,
+            kind=kind,
         )
         return json.dumps({request.vars["name"]: assignment_id, "status": "success"})
     except Exception as ex:
@@ -2671,7 +2781,9 @@ def _copy_one_assignment(course, oldid):
 def courselog():
     thecourse = db(db.courses.id == auth.user.course_id).select().first()
     course = auth.user.course_name
-
+    dburl = settings.database_uri.replace("postgres://", "postgresql://")
+    if dburl.find("?") > 0:
+        dburl = dburl[: dburl.find("?")]
     data = pd.read_sql_query(
         """
     select sid, useinfo.timestamp, event, act, div_id, chapter, subchapter
@@ -2681,7 +2793,7 @@ def courselog():
     """.format(
             thecourse.base_course, course
         ),
-        settings.database_uri.replace("postgres://", "postgresql://"),
+        dburl,
     )
     data = data[~data.sid.str.contains(r"^\d{38,38}@")]
 
@@ -2698,14 +2810,16 @@ def courselog():
 )
 def codelog():
     course = auth.user.course_name
-
+    dburl = settings.database_uri.replace("postgres://", "postgresql://")
+    if dburl.find("?") > 0:
+        dburl = dburl[: dburl.find("?")]
     data = pd.read_sql_query(
         """
     select * from code where course_id = {}
     """.format(
             auth.user.course_id
         ),
-        settings.database_uri.replace("postgres://", "postgresql://"),
+        dburl,
     )
     data = data[~data.sid.str.contains(r"^\d{38,38}@")]
 
@@ -2737,6 +2851,10 @@ def update_course():
             db(db.courses.id == thecourse.id).update(
                 allow_pairs=(request.vars["allow_pairs"] == "true")
             )
+        if "course_domain_name" in request.vars:
+            db(db.courses.id == thecourse.id).update(
+                domain_name=request.vars["course_domain_name"]
+            )
         if "downloads_enabled" in request.vars:
             print("DOWNLOADS = ", request.vars.enable_downloads)
             db(db.courses.id == thecourse.id).update(
@@ -2765,6 +2883,22 @@ def update_course():
                 course_id=thecourse.id,
                 attr="groupsize",
                 value=request.vars.groupsize,
+            )
+        if "ignore_lti_dates" in request.vars:
+            db.course_attributes.update_or_insert(
+                (db.course_attributes.course_id == thecourse.id)
+                & (db.course_attributes.attr == "ignore_lti_dates"),
+                course_id=thecourse.id,
+                attr="ignore_lti_dates",
+                value=request.vars.ignore_lti_dates,
+            )
+        if "no_lti_auto_grade_update" in request.vars:
+            db.course_attributes.update_or_insert(
+                (db.course_attributes.course_id == thecourse.id)
+                & (db.course_attributes.attr == "no_lti_auto_grade_update"),
+                course_id=thecourse.id,
+                attr="no_lti_auto_grade_update",
+                value=request.vars.no_lti_auto_grade_update,
             )
         return json.dumps(dict(status="success"))
 
